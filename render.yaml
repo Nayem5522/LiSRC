@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: autobot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    autoDeploy: true
+    envVars:
+      - key: API_ID
+        value: your_api_id
+      - key: API_HASH
+        value: your_api_hash
+      - key: USER_SESSION_STRING
+        value: your_session_string
+      - key: CHANNEL_ID
+        value: -100XXXXXXXXXX
+      - key: BOT_OWNER
+        value: your_user_id
+      - key: DATABASE_URL
+        value: your_mongo_url
