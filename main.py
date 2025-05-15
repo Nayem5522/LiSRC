@@ -10,18 +10,18 @@ from datetime import datetime
 # Configs from environment
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Changed here
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # সেশন স্ট্রিং এর জায়গায় বট টোকেন
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 RESULTS_COUNT = int(os.getenv("RESULTS_COUNT", 5))
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Pyrogram bot client (changed to bot_token)
+# Pyrogram bot client (bot token দিয়ে)
 app = Client(
-    name="bot",
+    "bot",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN  # Changed here
+    bot_token=BOT_TOKEN
 )
 
 # Mongo setup
@@ -56,8 +56,9 @@ async def save_channel_post(client, message: Message):
         }
         collection.update_one({"message_id": message.id}, {"$set": doc}, upsert=True)
 
+
 def extract_year(text):
-    match = re.search(r"(19|20)\d{2}", text)
+    match = re.search(r"(19|20)\\d{2}", text)
     return match.group() if match else None
 
 def extract_language(text):
@@ -94,11 +95,18 @@ async def broadcast_cmd(client, message):
         except: pass
     await message.reply(f"Broadcast sent to {count} users.")
 
+# **এখানে নতুন সুন্দর Stats কমান্ড ফাংশন**
 @app.on_message(filters.private & filters.command("stats") & filters.user(ADMIN_ID))
 async def stats_cmd(client, message):
-    total = users_collection.count_documents({})
-    feedbacks = feedback_collection.count_documents({})
-    await message.reply(f"Users: {total}\nFeedbacks: {feedbacks}")
+    total_users = users_collection.count_documents({})
+    total_feedbacks = feedback_collection.count_documents({})
+    total_movies = collection.count_documents({})
+
+    await message.reply(
+        f"Users: {total_users}\n"
+        f"Movies: {total_movies}\n"
+        f"Feedbacks: {total_feedbacks}"
+    )
 
 @app.on_message(filters.private & filters.text)
 async def search(client, message: Message):
