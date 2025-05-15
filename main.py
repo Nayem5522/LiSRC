@@ -33,7 +33,6 @@ collection = db["movies"]
 feedback_collection = db["feedback"]
 stats_collection = db["stats"]
 users_collection = db["users"]
-settings_collection = db["settings"]
 
 # Flask for uptime
 flask_app = Flask(__name__)
@@ -59,16 +58,14 @@ async def save_channel_post(client, message: Message):
         }
         collection.update_one({"message_id": message.id}, {"$set": doc}, upsert=True)
 
-        # Check if notification is enabled
-        notify_setting = settings_collection.find_one({"_id": "notify_toggle"}) or {"enabled": True}
-        if notify_setting["enabled"]:
-            name_line = text.split("\n")[0][:100]
-            notify_text = f"**নতুন মুভি আপলোড হয়েছে:**\n{name_line}\n\nএখনই এই নাম দিয়ে সার্চ করে দেখুন!"
-            for user in users_collection.find():
-                try:
-                    await client.send_message(user["_id"], notify_text)
-                except:
-                    pass
+        # Notify all users about new movie (check notify status)
+        name_line = text.split("\n")[0][:100]
+        notify_text = f"**নতুন মুভি আপলোড হয়েছে:**\n{name_line}\n\nএখনই এই নাম দিয়ে সার্চ করে দেখুন!"
+        for user in users_collection.find({"notify": {"$ne": False}}):  # যারা notify False নেই তাদের
+            try:
+                await client.send_message(user["_id"], notify_text)
+            except:
+                pass
 
 def extract_year(text):
     match = re.search(r"(19|20)\d{2}", text)
@@ -81,7 +78,8 @@ def extract_language(text):
             return lang
     return "Unknown"
 
-@app.on_message(filters.private | filters.group & filters.command("start"))
+# Start command handler (filter fixed)
+@app.on_message(filters.command("start") & (filters.private | filters.group))
 async def start(client, message):
     users_collection.update_one({"_id": message.from_user.id}, {"$set": {"joined": datetime.utcnow()}}, upsert=True)
     buttons = InlineKeyboardMarkup([
@@ -93,6 +91,7 @@ async def start(client, message):
         reply_markup=buttons
     )
 
+# Feedback command
 @app.on_message(filters.private & filters.command("feedback"))
 async def feedback_cmd(client, message):
     fb = message.text.split(" ", 1)
@@ -101,6 +100,7 @@ async def feedback_cmd(client, message):
     feedback_collection.insert_one({"user": message.from_user.id, "text": fb[1], "time": datetime.utcnow()})
     await message.reply("Thanks for your feedback!")
 
+# Broadcast command (admin only)
 @app.on_message(filters.private & filters.command("broadcast") & filters.user(ADMIN_ID))
 async def broadcast_cmd(client, message):
     text = message.text.split(" ", 1)
@@ -116,6 +116,7 @@ async def broadcast_cmd(client, message):
             pass
     await message.reply(f"Broadcast sent to {count} users.")
 
+# Stats command (admin only)
 @app.on_message(filters.private & filters.command("stats") & filters.user(ADMIN_ID))
 async def stats_cmd(client, message):
     total = users_collection.count_documents({})
@@ -123,15 +124,8 @@ async def stats_cmd(client, message):
     movies = collection.count_documents({})
     await message.reply(f"Users: {total}\nFeedbacks: {feedbacks}\nMovies in DB: {movies}")
 
-@app.on_message(filters.private & filters.command("notif") & filters.user(ADMIN_ID))
-async def toggle_notif(client, message):
-    current = settings_collection.find_one({"_id": "notify_toggle"}) or {"enabled": True}
-    new_state = not current["enabled"]
-    settings_collection.update_one({"_id": "notify_toggle"}, {"$set": {"enabled": new_state}}, upsert=True)
-    status = "ON ✅" if new_state else "OFF ❌"
-    await message.reply(f"নোটিফিকেশন এখন `{status}` করা হয়েছে।")
-
-@app.on_message(filters.private | filters.group & filters.text)
+# Search handler (filter fixed, only text)
+@app.on_message(filters.text & (filters.private | filters.group))
 async def search(client, message: Message):
     users_collection.update_one({"_id": message.from_user.id}, {"$set": {"last_search": datetime.utcnow()}}, upsert=True)
     query = message.text.strip()
@@ -161,6 +155,7 @@ async def search(client, message: Message):
         except Exception as e:
             print(f"Error forwarding: {e}")
 
+# Admin callback reply buttons handler
 @app.on_callback_query()
 async def admin_reply_callback(client, callback_query: CallbackQuery):
     data = callback_query.data
@@ -180,6 +175,18 @@ async def admin_reply_callback(client, callback_query: CallbackQuery):
             await callback_query.answer("ইউজারকে মেসেজ পাঠানো হয়েছে।", show_alert=True)
         except Exception as e:
             await callback_query.answer("ইউজারকে মেসেজ পাঠানো যায়নি।", show_alert=True)
+
+# Notify on/off command (admin only)
+@app.on_message(filters.private & filters.command("notify") & filters.user(ADMIN_ID))
+async def notify_cmd(client, message):
+    if len(message.command) < 2:
+        return await message.reply("Use /notify on or /notify off to control notifications.")
+    choice = message.command[1].lower()
+    if choice not in ["on", "off"]:
+        return await message.reply("Invalid option! Use /notify on or /notify off.")
+    notify_status = True if choice == "on" else False
+    users_collection.update_many({}, {"$set": {"notify": notify_status}})
+    await message.reply(f"Notification has been turned {'ON' if notify_status else 'OFF'} for all users.")
 
 if __name__ == "__main__":
     Thread(target=run_flask).start()
