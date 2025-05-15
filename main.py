@@ -6,6 +6,7 @@ from threading import Thread
 import os
 import re
 from datetime import datetime
+import asyncio  # added for async sleep
 
 # Configs from environment
 API_ID = int(os.getenv("API_ID"))
@@ -149,11 +150,21 @@ async def search(client, message: Message):
         )
         return
 
+    forwarded_message_ids = []
     for item in results:
         try:
-            await client.forward_messages(chat_id=message.chat.id, from_chat_id=CHANNEL_ID, message_ids=item["message_id"])
+            forwarded_msg = await client.forward_messages(chat_id=message.chat.id, from_chat_id=CHANNEL_ID, message_ids=item["message_id"])
+            forwarded_message_ids.append(forwarded_msg.message_id)
         except Exception as e:
             print(f"Error forwarding: {e}")
+
+    # Auto delete forwarded messages after 30 seconds
+    await asyncio.sleep(30)
+    for msg_id in forwarded_message_ids:
+        try:
+            await client.delete_messages(chat_id=message.chat.id, message_ids=msg_id)
+        except Exception as e:
+            print(f"Error deleting message: {e}")
 
 # Admin callback reply buttons handler
 @app.on_callback_query()
