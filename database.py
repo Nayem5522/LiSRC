@@ -1,26 +1,27 @@
-from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import MongoClient
 from config import Config
 
-client = AsyncIOMotorClient(Config.DATABASE_URL)
-db = client.autobot
-collection = db.files  # নিশ্চিত হও 'files' কালেকশন ব্যবহার করছো
+mongo_client = MongoClient(Config.DATABASE_URL)
+db = mongo_client["movie_db"]
+collection = db["movies"]
 
 async def add_to_db(message):
-    # message.text or message.caption দুইটাই হতে পারে, কোনোটা নেই তাহলে ফেরত দাও
+    """
+    Channel থেকে আসা মুভি মেসেজ সেভ করার জন্য (পরে চাইলে ইউজার আইডি সেভ করতে পারো)
+    """
     title = message.text or message.caption
     if not title:
         return
-
+    title = title.lower()
+    if collection.find_one({"message_id": message.id}):
+        return
     data = {
-        "message_id": message.message_id,   # Pyrogram message_id
-        "title": title.lower()
+        "message_id": message.id,
+        "title": title,
     }
-    # যদি আগে থেকে সেই মেসেজ আইডি না থাকে, তখন ইনসার্ট করো
-    exists = await collection.find_one({"message_id": message.message_id})
-    if not exists:
-        await collection.insert_one(data)
+    collection.insert_one(data)
 
 async def search_from_db(query: str, limit: int = 5):
-    regex = {"$regex": query, "$options": "i"}  # case insensitive search
+    regex = {"$regex": query, "$options": "i"}
     results = collection.find({"title": regex}).limit(limit)
-    return await results.to_list(length=limit)
+    return list(results)
