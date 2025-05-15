@@ -1,4 +1,5 @@
-pyrogram==2.0.106
-tgcrypto
-flask
-motor
+pyrogram==2.0.38
+tgcrypto==1.2.4
+pymongo[srv]==4.4.1
+flask==2.3.2
+nest_asyncio==1.5.6
