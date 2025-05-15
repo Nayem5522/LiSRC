@@ -1,10 +1,10 @@
 import os
 
 class Config:
-    API_ID = int(os.getenv("API_ID", 12345))
+    API_ID = int(os.getenv("API_ID", "1234567"))
     API_HASH = os.getenv("API_HASH", "")
-    USER_SESSION_STRING = os.getenv("USER_SESSION_STRING", "")
-    CHANNEL_ID = int(os.getenv("CHANNEL_ID", -100))  # Channel to Save From
-    BOT_OWNER = int(os.getenv("BOT_OWNER", 12345678))
+    BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+    CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1001234567890"))
     DATABASE_URL = os.getenv("DATABASE_URL", "")
-    RESULTS_COUNT = int(os.getenv("RESULTS_COUNT", 5))
+    RESULTS_COUNT = int(os.getenv("RESULTS_COUNT", "5"))
+    LOG_CHANNEL = int(os.getenv("LOG_CHANNEL", "0"))
