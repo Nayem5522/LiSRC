@@ -1,14 +1,14 @@
-from pymongo import MongoClient
+from motor.motor_asyncio import AsyncIOMotorClient
 from config import Config
 
-client = MongoClient(Config.DATABASE_URL)
+client = AsyncIOMotorClient(Config.DATABASE_URL)
 db = client.autobot
 collection = db.files
 
 async def add_to_db(message):
-    if not message.text and not message.caption:
-        return
     title = message.text or message.caption
+    if not title:
+        return
     data = {
         "message_id": message.id,
         "title": title.lower()
