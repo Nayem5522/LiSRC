@@ -6,9 +6,8 @@ from threading import Thread
 import os
 import re
 from datetime import datetime
-import asyncio  # added for async sleep
+import asyncio
 
-# Configs from environment
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -19,7 +18,6 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL", "https://t.me/CTGMovieOfficial")
 START_PIC = os.getenv("START_PIC", "https://envs.sh/o3s.jpg")
 
-# Pyrogram bot client
 app = Client(
     name="movie_bot",
     api_id=API_ID,
@@ -27,22 +25,17 @@ app = Client(
     bot_token=BOT_TOKEN
 )
 
-# Mongo setup
 mongo_client = MongoClient(DATABASE_URL)
 db = mongo_client["movie_bot"]
 collection = db["movies"]
 feedback_collection = db["feedback"]
 stats_collection = db["stats"]
 users_collection = db["users"]
-
-# --- Global Notification Setting Initialization ---
 settings_collection = db["settings"]
 
-# Initialize global_notify setting if not exists
 if settings_collection.count_documents({"key": "global_notify"}) == 0:
     settings_collection.insert_one({"key": "global_notify", "value": True})
 
-# Flask for uptime
 flask_app = Flask(__name__)
 
 @flask_app.route("/")
@@ -66,14 +59,13 @@ async def save_channel_post(client, message: Message):
         }
         collection.update_one({"message_id": message.id}, {"$set": doc}, upsert=True)
 
-        # Check global notify status before notifying users
         global_notify_setting = settings_collection.find_one({"key": "global_notify"})
         global_notify = global_notify_setting["value"] if global_notify_setting else True
 
         if global_notify:
             name_line = text.split("\n")[0][:100]
             notify_text = f"**নতুন মুভি আপলোড হয়েছে:**\n{name_line}\n\nএখনই এই নাম দিয়ে সার্চ করে দেখুন!"
-            for user in users_collection.find({"notify": {"$ne": False}}):  # যারা notify False নেই তাদের
+            for user in users_collection.find({"notify": {"$ne": False}}):
                 try:
                     await client.send_message(user["_id"], notify_text)
                 except:
@@ -90,7 +82,6 @@ def extract_language(text):
             return lang
     return "Unknown"
 
-# Start command handler (filter fixed)
 @app.on_message(filters.command("start") & (filters.private | filters.group))
 async def start(client, message):
     users_collection.update_one({"_id": message.from_user.id}, {"$set": {"joined": datetime.utcnow()}}, upsert=True)
@@ -103,7 +94,6 @@ async def start(client, message):
         reply_markup=buttons
     )
 
-# Feedback command
 @app.on_message(filters.private & filters.command("feedback"))
 async def feedback_cmd(client, message):
     fb = message.text.split(" ", 1)
@@ -112,7 +102,6 @@ async def feedback_cmd(client, message):
     feedback_collection.insert_one({"user": message.from_user.id, "text": fb[1], "time": datetime.utcnow()})
     await message.reply("Thanks for your feedback!")
 
-# Broadcast command (admin only)
 @app.on_message(filters.private & filters.command("broadcast") & filters.user(ADMIN_ID))
 async def broadcast_cmd(client, message):
     text = message.text.split(" ", 1)
@@ -128,7 +117,6 @@ async def broadcast_cmd(client, message):
             pass
     await message.reply(f"Broadcast sent to {count} users.")
 
-# Stats command (admin only)
 @app.on_message(filters.private & filters.command("stats") & filters.user(ADMIN_ID))
 async def stats_cmd(client, message):
     total = users_collection.count_documents({})
@@ -136,7 +124,6 @@ async def stats_cmd(client, message):
     movies = collection.count_documents({})
     await message.reply(f"Users: {total}\nFeedbacks: {feedbacks}\nMovies in DB: {movies}")
 
-# Search handler (filter fixed, only text)
 @app.on_message(filters.text & (filters.private | filters.group))
 async def search(client, message: Message):
     users_collection.update_one({"_id": message.from_user.id}, {"$set": {"last_search": datetime.utcnow()}}, upsert=True)
@@ -169,7 +156,6 @@ async def search(client, message: Message):
         except Exception as e:
             print(f"Error forwarding: {e}")
 
-    # Auto delete forwarded messages after 30 seconds
     await asyncio.sleep(30)
     for msg_id in forwarded_message_ids:
         try:
@@ -177,7 +163,6 @@ async def search(client, message: Message):
         except Exception as e:
             print(f"Error deleting message: {e}")
 
-# Admin callback reply buttons handler
 @app.on_callback_query()
 async def admin_reply_callback(client, callback_query: CallbackQuery):
     data = callback_query.data
@@ -198,7 +183,6 @@ async def admin_reply_callback(client, callback_query: CallbackQuery):
         except Exception as e:
             await callback_query.answer("ইউজারকে মেসেজ পাঠানো যায়নি।", show_alert=True)
 
-# Notify on/off command (admin only)
 @app.on_message(filters.private & filters.command("notify") & filters.user(ADMIN_ID))
 async def notify_cmd(client, message):
     if len(message.command) < 2:
@@ -210,27 +194,31 @@ async def notify_cmd(client, message):
     users_collection.update_many({}, {"$set": {"notify": notify_status}})
     await message.reply(f"Notification has been turned {'ON' if notify_status else 'OFF'} for all users.")
 
-# --- Global Notify Control Command for Admin ---
+# -------- ঠিক করা globalnotify কমান্ড -------- #
 @app.on_message(filters.private & filters.command("globalnotify") & filters.user(ADMIN_ID))
 async def global_notify_cmd(client, message):
     if len(message.command) < 2:
         return await message.reply("Use /globalnotify on or /globalnotify off to control global notifications.")
+    
     choice = message.command[1].lower()
     if choice not in ["on", "off"]:
         return await message.reply("Invalid option! Use /globalnotify on or /globalnotify off.")
+    
     status = True if choice == "on" else False
-    settings_collection.update_one({"key": "global_notify"}, {"$set": {"value": status}})
+
+    settings_collection.update_one(
+        {"key": "global_notify"},
+        {"$set": {"value": status}},
+        upsert=True
+    )
+
     await message.reply(f"Global notification has been turned {'ON' if status else 'OFF'}.")
 
-# ------------ এখানে নতুন ডিলিট কমান্ডগুলো যুক্ত করলাম ------------ #
-
-# Delete all movies (admin only)
 @app.on_message(filters.private & filters.command("delete_all") & filters.user(ADMIN_ID))
 async def delete_all_movies(client, message):
     result = collection.delete_many({})
     await message.reply(f"সকল মুভি ডাটাবেজ থেকে মুছে ফেলা হয়েছে। মোট মুছে ফেলা হয়েছে: {result.deleted_count} টি।")
 
-# Delete single movie by message_id (admin only)
 @app.on_message(filters.private & filters.command("delete_movie") & filters.user(ADMIN_ID))
 async def delete_movie(client, message):
     args = message.text.split(maxsplit=1)
