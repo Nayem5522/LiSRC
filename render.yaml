@@ -3,7 +3,7 @@ services:
     name: autobot
     env: python
     plan: free
-    buildCommand: python -m pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt
     startCommand: python main.py
     autoDeploy: true
     envVars:
@@ -12,10 +12,12 @@ services:
       - key: API_HASH
         value: your_api_hash
       - key: BOT_TOKEN
-        value: your_bot_token_here
+        value: your_bot_token
       - key: CHANNEL_ID
-        value: -100XXXXXXXXXX
+        value: -1001234567890  # তোমার চ্যানেল আইডি
       - key: BOT_OWNER
-        value: your_user_id
+        value: 123456789  # তোমার টেলিগ্রাম ইউজার আইডি
       - key: DATABASE_URL
-        value: your_mongo_url
+        value: your_mongodb_url
+      - key: RESULTS_COUNT
+        value: 5
