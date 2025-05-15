@@ -199,6 +199,32 @@ async def notify_cmd(client, message):
     users_collection.update_many({}, {"$set": {"notify": notify_status}})
     await message.reply(f"Notification has been turned {'ON' if notify_status else 'OFF'} for all users.")
 
+# ------------ এখানে নতুন ডিলিট কমান্ডগুলো যুক্ত করলাম ------------ #
+
+# Delete all movies (admin only)
+@app.on_message(filters.private & filters.command("delete_all") & filters.user(ADMIN_ID))
+async def delete_all_movies(client, message):
+    result = collection.delete_many({})
+    await message.reply(f"সকল মুভি ডাটাবেজ থেকে মুছে ফেলা হয়েছে। মোট মুছে ফেলা হয়েছে: {result.deleted_count} টি।")
+
+# Delete single movie by message_id (admin only)
+@app.on_message(filters.private & filters.command("delete_movie") & filters.user(ADMIN_ID))
+async def delete_movie(client, message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        return await message.reply("মুভি ডিলিট করতে /delete_movie [message_id] লিখুন।")
+
+    try:
+        message_id = int(args[1].strip())
+    except ValueError:
+        return await message.reply("দয়া করে সঠিক message_id (একটি সংখ্যা) দিন।")
+
+    result = collection.delete_one({"message_id": message_id})
+    if result.deleted_count == 1:
+        await message.reply(f"মুভি message_id {message_id} সফলভাবে ডিলিট হয়েছে।")
+    else:
+        await message.reply(f"মুভি message_id {message_id} ডাটাবেজে পাওয়া যায়নি।")
+
 if __name__ == "__main__":
     Thread(target=run_flask).start()
     app.run()
