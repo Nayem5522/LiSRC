@@ -3,7 +3,7 @@ from pyrogram.types import Message
 from config import Config
 from database import add_to_db, search_from_db
 
-app = Client("AutoLinkSearch",
+app = Client("AutoBot",
              api_id=Config.API_ID,
              api_hash=Config.API_HASH,
              session_string=Config.USER_SESSION_STRING)
@@ -31,6 +31,4 @@ async def search_post(client: Client, message: Message):
                 message_ids=result["message_id"]
             )
         except Exception as e:
-            await message.reply(f"ফরোয়ার্ড করতে সমস্যা হচ্ছে: {e}")
-
-app.run()
+            await message.reply(f"ফরোয়ার্ড করতে সমস্যা হয়েছে:\n`{e}`")
