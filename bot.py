@@ -6,7 +6,7 @@ from database import add_to_db, search_from_db
 app = Client("AutoBot",
              api_id=Config.API_ID,
              api_hash=Config.API_HASH,
-             session_string=Config.USER_SESSION_STRING)
+             bot_token=Config.BOT_TOKEN)  # session_string এর জায়গায় bot_token
 
 SOURCE_CHANNEL = Config.CHANNEL_ID
 
@@ -32,3 +32,6 @@ async def search_post(client: Client, message: Message):
             )
         except Exception as e:
             await message.reply(f"ফরোয়ার্ড করতে সমস্যা হয়েছে:\n`{e}`")
+
+if __name__ == "__main__":
+    app.run()
