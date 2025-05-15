@@ -1,5 +1,15 @@
+import threading
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+
+def start_web():
+    server = HTTPServer(("0.0.0.0", 8000), SimpleHTTPRequestHandler)
+    print("Web server running on port 8000")
+    server.serve_forever()
+
+# থ্রেডে রান করাও যেন বট চলতে থাকে
+threading.Thread(target=start_web, daemon=True).start()
+
 from pyrogram import Client, filters
-from pyrogram.types import Message
 from config import Config
 from database import add_to_db, search_from_db
 
@@ -14,21 +24,20 @@ SOURCE_CHANNEL = Config.CHANNEL_ID
 ADMIN_ID = Config.ADMIN_ID
 
 @app.on_message(filters.chat(SOURCE_CHANNEL))
-async def save_channel_post(client: Client, message: Message):
+async def save_channel_post(client, message):
     await add_to_db(message)
 
 @app.on_message(filters.private & filters.text)
-async def search_post(client: Client, message: Message):
+async def search_post(client, message):
     query = message.text.strip().lower()
     results = await search_from_db(query, Config.RESULTS_COUNT)
 
     if not results:
         await message.reply("কোনো ফলাফল পাওয়া যায়নি!")
-        # Notify admin about failed search
         if ADMIN_ID != 0:
             await client.send_message(
                 chat_id=ADMIN_ID,
-                text=f"User [{message.from_user.first_name}](tg://user?id={message.from_user.id}) searched for:\n`{query}`\nBut no results were found."
+                text=f"User [{message.from_user.first_name}](tg://user?id={message.from_user.id}) searched:\n`{query}`\nNo results found."
             )
         return
 
