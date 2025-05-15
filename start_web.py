@@ -1,9 +1,8 @@
+import os
 from http.server import SimpleHTTPRequestHandler, HTTPServer
-import threading
 
 def start_web():
-    server = HTTPServer(("0.0.0.0", 8000), SimpleHTTPRequestHandler)
-    print("Web server running on port 8000")
+    port = int(os.environ.get("PORT", 8000))
+    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
+    print(f"Web server running on port {port}")
     server.serve_forever()
-
-threading.Thread(target=start_web, daemon=True).start()
