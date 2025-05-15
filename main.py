@@ -18,224 +18,144 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL", "https://t.me/CTGMovieOfficial")
 START_PIC = os.getenv("START_PIC", "https://envs.sh/o3s.jpg")
 
-app = Client(
-    name="movie_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN
-)
+app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-mongo_client = MongoClient(DATABASE_URL)
-db = mongo_client["movie_bot"]
-collection = db["movies"]
-feedback_collection = db["feedback"]
-stats_collection = db["stats"]
-users_collection = db["users"]
-settings_collection = db["settings"]
+mongo = MongoClient(DATABASE_URL)
+db = mongo["movie_bot"]
+movies_col = db["movies"]
+feedback_col = db["feedback"]
+stats_col = db["stats"]
+users_col = db["users"]
+settings_col = db["settings"]
 
-if settings_collection.count_documents({"key": "global_notify"}) == 0:
-    settings_collection.insert_one({"key": "global_notify", "value": True})
+if not settings_col.find_one({"key": "global_notify"}):
+    settings_col.insert_one({"key": "global_notify", "value": True})
 
 flask_app = Flask(__name__)
-
 @flask_app.route("/")
-def home():
-    return "Bot is alive!"
-
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=8080)
+def home(): return "Bot is running!"
+def run(): flask_app.run(host="0.0.0.0", port=8080)
 
 @app.on_message(filters.chat(CHANNEL_ID))
-async def save_channel_post(client, message: Message):
-    if message.text or message.caption:
-        text = message.text or message.caption
-        doc = {
-            "message_id": message.id,
-            "title": text,
-            "date": message.date,
-            "type": "movie",
-            "year": extract_year(text),
-            "language": extract_language(text)
-        }
-        collection.update_one({"message_id": message.id}, {"$set": doc}, upsert=True)
+async def save_post(_, msg: Message):
+    text = msg.text or msg.caption
+    if not text: return
+    movie = {
+        "message_id": msg.id,
+        "title": text,
+        "date": msg.date,
+        "type": "movie",
+        "year": extract_year(text),
+        "language": extract_language(text)
+    }
+    movies_col.update_one({"message_id": msg.id}, {"$set": movie}, upsert=True)
 
-        global_notify_setting = settings_collection.find_one({"key": "global_notify"})
-        global_notify = global_notify_setting["value"] if global_notify_setting else True
+    setting = settings_col.find_one({"key": "global_notify"})
+    if setting and setting["value"]:
+        for user in users_col.find({"notify": {"$ne": False}}):
+            try:
+                await app.send_message(user["_id"], f"নতুন মুভি আপলোড হয়েছে:\n{text.splitlines()[0][:100]}\n\nএখনই সার্চ করে দেখুন!")
+            except: pass
 
-        if global_notify:
-            name_line = text.split("\n")[0][:100]
-            notify_text = f"**নতুন মুভি আপলোড হয়েছে:**\n{name_line}\n\nএখনই এই নাম দিয়ে সার্চ করে দেখুন!"
-            for user in users_collection.find({"notify": {"$ne": False}}):
-                try:
-                    await client.send_message(user["_id"], notify_text)
-                except:
-                    pass
-
-def extract_year(text):
-    match = re.search(r"(19|20)\d{2}", text)
-    return match.group() if match else None
-
-def extract_language(text):
-    langs = ["Bengali", "Bangla", "Hindi", "English"]
-    for lang in langs:
-        if lang.lower() in text.lower():
-            return lang
-    return "Unknown"
+def extract_year(text): match = re.search(r"(19|20)\d{2}", text); return match.group() if match else None
+def extract_language(text): langs = ["Bengali", "Bangla", "Hindi", "English"]; return next((lang for lang in langs if lang.lower() in text.lower()), "Unknown")
 
 @app.on_message(filters.command("start") & (filters.private | filters.group))
-async def start(client, message):
-    users_collection.update_one({"_id": message.from_user.id}, {"$set": {"joined": datetime.utcnow()}}, upsert=True)
-    buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Update Channel", url=UPDATE_CHANNEL)]
-    ])
-    await message.reply_photo(
-        photo=START_PIC,
-        caption="Welcome! Send me a movie name to search.",
-        reply_markup=buttons
-    )
+async def start(_, msg):
+    users_col.update_one({"_id": msg.from_user.id}, {"$set": {"joined": datetime.utcnow()}}, upsert=True)
+    btns = InlineKeyboardMarkup([[InlineKeyboardButton("Update Channel", url=UPDATE_CHANNEL)]])
+    await msg.reply_photo(photo=START_PIC, caption="Send me a movie name to search.", reply_markup=btns)
 
-@app.on_message(filters.private & filters.command("feedback"))
-async def feedback_cmd(client, message):
-    fb = message.text.split(" ", 1)
-    if len(fb) < 2:
-        return await message.reply("Please provide feedback after /feedback.")
-    feedback_collection.insert_one({"user": message.from_user.id, "text": fb[1], "time": datetime.utcnow()})
-    await message.reply("Thanks for your feedback!")
+@app.on_message(filters.command("feedback") & filters.private)
+async def feedback(_, msg):
+    if len(msg.command) < 2: return await msg.reply("Please write something after /feedback.")
+    feedback_col.insert_one({"user": msg.from_user.id, "text": msg.text.split(None, 1)[1], "time": datetime.utcnow()})
+    await msg.reply("Thanks for your feedback!")
 
-@app.on_message(filters.private & filters.command("broadcast") & filters.user(ADMIN_ID))
-async def broadcast_cmd(client, message):
-    text = message.text.split(" ", 1)
-    if len(text) < 2:
-        return await message.reply("Give message to broadcast.")
-    msg = text[1]
+@app.on_message(filters.command("broadcast") & filters.user(ADMIN_ID))
+async def broadcast(_, msg):
+    if len(msg.command) < 2: return await msg.reply("Usage: /broadcast Your message here")
     count = 0
-    for user in users_collection.find():
-        try:
-            await client.send_message(user["_id"], msg)
-            count += 1
-        except:
-            pass
-    await message.reply(f"Broadcast sent to {count} users.")
+    for user in users_col.find():
+        try: await app.send_message(user["_id"], msg.text.split(None, 1)[1]); count += 1
+        except: pass
+    await msg.reply(f"Broadcast sent to {count} users.")
 
-@app.on_message(filters.private & filters.command("stats") & filters.user(ADMIN_ID))
-async def stats_cmd(client, message):
-    total = users_collection.count_documents({})
-    feedbacks = feedback_collection.count_documents({})
-    movies = collection.count_documents({})
-    await message.reply(f"Users: {total}\nFeedbacks: {feedbacks}\nMovies in DB: {movies}")
+@app.on_message(filters.command("stats") & filters.user(ADMIN_ID))
+async def stats(_, msg):
+    await msg.reply(f"Users: {users_col.count_documents({})}\nMovies: {movies_col.count_documents({})}\nFeedbacks: {feedback_col.count_documents({})}")
+
+@app.on_message(filters.command("notify") & filters.user(ADMIN_ID))
+async def notify(_, msg):
+    if len(msg.command) < 2 or msg.command[1] not in ["on", "off"]:
+        return await msg.reply("Usage: /notify on or /notify off")
+    users_col.update_many({}, {"$set": {"notify": msg.command[1] == "on"}})
+    await msg.reply(f"Notification turned {msg.command[1].upper()} for all users.")
+
+@app.on_message(filters.command("globalnotify") & filters.user(ADMIN_ID))
+async def globalnotify(_, msg):
+    if len(msg.command) < 2 or msg.command[1] not in ["on", "off"]:
+        return await msg.reply("Usage: /globalnotify on or /globalnotify off")
+    settings_col.update_one({"key": "global_notify"}, {"$set": {"value": msg.command[1] == "on"}})
+    await msg.reply(f"Global Notify turned {msg.command[1].upper()}")
+
+@app.on_message(filters.command("delete_all") & filters.user(ADMIN_ID))
+async def delete_all(_, msg):
+    deleted = movies_col.delete_many({}).deleted_count
+    await msg.reply(f"{deleted} টি মুভি মুছে ফেলা হয়েছে।")
+
+@app.on_message(filters.command("delete_movie") & filters.user(ADMIN_ID))
+async def delete_one(_, msg):
+    try: mid = int(msg.command[1])
+    except: return await msg.reply("Usage: /delete_movie message_id")
+    result = movies_col.delete_one({"message_id": mid})
+    await msg.reply("Deleted successfully." if result.deleted_count else "Movie not found.")
 
 @app.on_message(filters.text & (filters.private | filters.group))
-async def search(client, message: Message):
-    users_collection.update_one({"_id": message.from_user.id}, {"$set": {"last_search": datetime.utcnow()}}, upsert=True)
-    query = message.text.strip()
-    filters_q = {"title": {"$regex": query, "$options": "i"}}
-    results = list(collection.find(filters_q).limit(RESULTS_COUNT))
-
+async def search(_, msg):
+    query = msg.text.strip()
+    users_col.update_one({"_id": msg.from_user.id}, {"$set": {"last_search": datetime.utcnow()}}, upsert=True)
+    results = list(movies_col.find({"title": {"$regex": query, "$options": "i"}}).limit(RESULTS_COUNT))
     if not results:
-        await message.reply("কোনও ফলাফল পাওয়া যায়নি। অ্যাডমিনকে জানানো হয়েছে।")
-
-        buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ মুভি আছে", callback_data=f"has_{message.chat.id}")],
-            [InlineKeyboardButton("❌ মুভি নেই", callback_data=f"no_{message.chat.id}")],
-            [InlineKeyboardButton("⏳ শিগগির আসবে", callback_data=f"soon_{message.chat.id}")],
-            [InlineKeyboardButton("✏️ নাম ভুল", callback_data=f"wrong_{message.chat.id}")]
+        await msg.reply("কোনও ফলাফল পাওয়া যায়নি। অ্যাডমিনকে জানানো হয়েছে।")
+        btn = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ মুভি আছে", callback_data=f"has_{msg.chat.id}")],
+            [InlineKeyboardButton("❌ নেই", callback_data=f"no_{msg.chat.id}")],
+            [InlineKeyboardButton("⏳ আসবে", callback_data=f"soon_{msg.chat.id}")],
+            [InlineKeyboardButton("✏️ ভুল নাম", callback_data=f"wrong_{msg.chat.id}")]
         ])
-
-        await client.send_message(
-            ADMIN_ID,
-            f"❗ ইউজার `{message.from_user.id}` `{message.from_user.first_name}` এই নাম সার্চ করেছে: **{query}**\n\nকোন ফলাফল পাওয়া যায়নি। নিচে বাটন থেকে ইউজারকে রিপ্লাই দিন।",
-            reply_markup=buttons
-        )
+        await app.send_message(ADMIN_ID, f"❗ ইউজার `{msg.from_user.id}` `{msg.from_user.first_name}` খুঁজেছে: **{query}**\n\nফলাফল পাওয়া যায়নি। নিচে বাটন থেকে উত্তর দিন।", reply_markup=btn)
         return
 
-    forwarded_message_ids = []
+    fwd = []
     for item in results:
         try:
-            forwarded_msg = await client.forward_messages(chat_id=message.chat.id, from_chat_id=CHANNEL_ID, message_ids=item["message_id"])
-            forwarded_message_ids.append(forwarded_msg.message_id)
-        except Exception as e:
-            print(f"Error forwarding: {e}")
-
+            m = await app.forward_messages(msg.chat.id, CHANNEL_ID, item["message_id"])
+            fwd.append(m.id)
+        except: pass
     await asyncio.sleep(30)
-    for msg_id in forwarded_message_ids:
-        try:
-            await client.delete_messages(chat_id=message.chat.id, message_ids=msg_id)
-        except Exception as e:
-            print(f"Error deleting message: {e}")
+    for mid in fwd:
+        try: await app.delete_messages(msg.chat.id, mid)
+        except: pass
 
 @app.on_callback_query()
-async def admin_reply_callback(client, callback_query: CallbackQuery):
-    data = callback_query.data
-    if "_" in data:
-        action, user_id = data.split("_")
-        user_id = int(user_id)
-
-        messages = {
-            "has": "✅ আপনার খোঁজা মুভিটি ডাটাবেজে আছে। নামটি ঠিকভাবে লিখে আবার চেষ্টা করুন।",
-            "no": "❌ এই মুভিটি আমাদের ডাটাবেজে নেই।",
-            "soon": "⏳ এই মুভিটি খুব শিগগিরই আপলোড হবে। আবার কিছুক্ষণ পরে সার্চ দিন।",
-            "wrong": "✏️ আপনি যে নামটি লিখেছেন সেটি সঠিক নয়। নামটি ঠিকভাবে লিখে আবার চেষ্টা করুন।"
-        }
-
+async def vote_reply(_, cq: CallbackQuery):
+    if "_" not in cq.data: return
+    action, user_id = cq.data.split("_")
+    uid = int(user_id)
+    responses = {
+        "has": "✅ মুভিটি ডাটাবেজে আছে। নামটি সঠিকভাবে লিখে আবার চেষ্টা করুন।",
+        "no": "❌ এই মুভিটি ডাটাবেজে নেই।",
+        "soon": "⏳ এই মুভিটি শিগগির আসবে।",
+        "wrong": "✏️ নামটি ভুল হয়েছে। আবার চেষ্টা করুন।"
+    }
+    if action in responses:
         try:
-            await client.send_message(user_id, messages[action])
-            await callback_query.answer("ইউজারকে মেসেজ পাঠানো হয়েছে।", show_alert=True)
-        except Exception as e:
-            await callback_query.answer("ইউজারকে মেসেজ পাঠানো যায়নি।", show_alert=True)
-
-@app.on_message(filters.private & filters.command("notify") & filters.user(ADMIN_ID))
-async def notify_cmd(client, message):
-    if len(message.command) < 2:
-        return await message.reply("Use /notify on or /notify off to control notifications.")
-    choice = message.command[1].lower()
-    if choice not in ["on", "off"]:
-        return await message.reply("Invalid option! Use /notify on or /notify off.")
-    notify_status = True if choice == "on" else False
-    users_collection.update_many({}, {"$set": {"notify": notify_status}})
-    await message.reply(f"Notification has been turned {'ON' if notify_status else 'OFF'} for all users.")
-
-# -------- ঠিক করা globalnotify কমান্ড -------- #
-@app.on_message(filters.private & filters.command("globalnotify") & filters.user(ADMIN_ID))
-async def global_notify_cmd(client, message):
-    if len(message.command) < 2:
-        return await message.reply("Use /globalnotify on or /globalnotify off to control global notifications.")
-    
-    choice = message.command[1].lower()
-    if choice not in ["on", "off"]:
-        return await message.reply("Invalid option! Use /globalnotify on or /globalnotify off.")
-    
-    status = True if choice == "on" else False
-
-    settings_collection.update_one(
-        {"key": "global_notify"},
-        {"$set": {"value": status}},
-        upsert=True
-    )
-
-    await message.reply(f"Global notification has been turned {'ON' if status else 'OFF'}.")
-
-@app.on_message(filters.private & filters.command("delete_all") & filters.user(ADMIN_ID))
-async def delete_all_movies(client, message):
-    result = collection.delete_many({})
-    await message.reply(f"সকল মুভি ডাটাবেজ থেকে মুছে ফেলা হয়েছে। মোট মুছে ফেলা হয়েছে: {result.deleted_count} টি।")
-
-@app.on_message(filters.private & filters.command("delete_movie") & filters.user(ADMIN_ID))
-async def delete_movie(client, message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        return await message.reply("মুভি ডিলিট করতে /delete_movie [message_id] লিখুন।")
-
-    try:
-        message_id = int(args[1].strip())
-    except ValueError:
-        return await message.reply("দয়া করে সঠিক message_id (একটি সংখ্যা) দিন।")
-
-    result = collection.delete_one({"message_id": message_id})
-    if result.deleted_count == 1:
-        await message.reply(f"মুভি message_id {message_id} সফলভাবে ডিলিট হয়েছে।")
-    else:
-        await message.reply(f"মুভি message_id {message_id} ডাটাবেজে পাওয়া যায়নি।")
+            await app.send_message(uid, responses[action])
+            await cq.answer("রিপ্লাই পাঠানো হয়েছে", show_alert=True)
+        except:
+            await cq.answer("ইউজারকে মেসেজ পাঠানো যায়নি", show_alert=True)
 
 if __name__ == "__main__":
-    Thread(target=run_flask).start()
+    Thread(target=run).start()
     app.run()
