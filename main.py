@@ -33,6 +33,7 @@ collection = db["movies"]
 feedback_collection = db["feedback"]
 stats_collection = db["stats"]
 users_collection = db["users"]
+settings_collection = db["settings"]
 
 # Flask for uptime
 flask_app = Flask(__name__)
@@ -58,13 +59,16 @@ async def save_channel_post(client, message: Message):
         }
         collection.update_one({"message_id": message.id}, {"$set": doc}, upsert=True)
 
-        # Notify all users about new movie
-        name_line = text.split("\n")[0][:100]
-        notify_text = f"**নতুন মুভি আপলোড হয়েছে:**\n{name_line}\n\nএখনই এই নাম দিয়ে সার্চ করে দেখুন!"
-        for user in users_collection.find():
-            try:
-                await client.send_message(user["_id"], notify_text)
-            except: pass
+        # Check if notification is enabled
+        notify_setting = settings_collection.find_one({"_id": "notify_toggle"}) or {"enabled": True}
+        if notify_setting["enabled"]:
+            name_line = text.split("\n")[0][:100]
+            notify_text = f"**নতুন মুভি আপলোড হয়েছে:**\n{name_line}\n\nএখনই এই নাম দিয়ে সার্চ করে দেখুন!"
+            for user in users_collection.find():
+                try:
+                    await client.send_message(user["_id"], notify_text)
+                except:
+                    pass
 
 def extract_year(text):
     match = re.search(r"(19|20)\d{2}", text)
@@ -77,8 +81,7 @@ def extract_language(text):
             return lang
     return "Unknown"
 
-# Start command handler (filter fixed)
-@app.on_message(filters.command("start") & (filters.private | filters.group))
+@app.on_message(filters.private | filters.group & filters.command("start"))
 async def start(client, message):
     users_collection.update_one({"_id": message.from_user.id}, {"$set": {"joined": datetime.utcnow()}}, upsert=True)
     buttons = InlineKeyboardMarkup([
@@ -90,7 +93,6 @@ async def start(client, message):
         reply_markup=buttons
     )
 
-# Feedback command
 @app.on_message(filters.private & filters.command("feedback"))
 async def feedback_cmd(client, message):
     fb = message.text.split(" ", 1)
@@ -99,7 +101,6 @@ async def feedback_cmd(client, message):
     feedback_collection.insert_one({"user": message.from_user.id, "text": fb[1], "time": datetime.utcnow()})
     await message.reply("Thanks for your feedback!")
 
-# Broadcast command (admin only)
 @app.on_message(filters.private & filters.command("broadcast") & filters.user(ADMIN_ID))
 async def broadcast_cmd(client, message):
     text = message.text.split(" ", 1)
@@ -111,10 +112,10 @@ async def broadcast_cmd(client, message):
         try:
             await client.send_message(user["_id"], msg)
             count += 1
-        except: pass
+        except:
+            pass
     await message.reply(f"Broadcast sent to {count} users.")
 
-# Stats command (admin only)
 @app.on_message(filters.private & filters.command("stats") & filters.user(ADMIN_ID))
 async def stats_cmd(client, message):
     total = users_collection.count_documents({})
@@ -122,8 +123,15 @@ async def stats_cmd(client, message):
     movies = collection.count_documents({})
     await message.reply(f"Users: {total}\nFeedbacks: {feedbacks}\nMovies in DB: {movies}")
 
-# Search handler (filter fixed, only text)
-@app.on_message(filters.text & (filters.private | filters.group))
+@app.on_message(filters.private & filters.command("notif") & filters.user(ADMIN_ID))
+async def toggle_notif(client, message):
+    current = settings_collection.find_one({"_id": "notify_toggle"}) or {"enabled": True}
+    new_state = not current["enabled"]
+    settings_collection.update_one({"_id": "notify_toggle"}, {"$set": {"enabled": new_state}}, upsert=True)
+    status = "ON ✅" if new_state else "OFF ❌"
+    await message.reply(f"নোটিফিকেশন এখন `{status}` করা হয়েছে।")
+
+@app.on_message(filters.private | filters.group & filters.text)
 async def search(client, message: Message):
     users_collection.update_one({"_id": message.from_user.id}, {"$set": {"last_search": datetime.utcnow()}}, upsert=True)
     query = message.text.strip()
@@ -153,7 +161,6 @@ async def search(client, message: Message):
         except Exception as e:
             print(f"Error forwarding: {e}")
 
-# Admin callback reply buttons handler
 @app.on_callback_query()
 async def admin_reply_callback(client, callback_query: CallbackQuery):
     data = callback_query.data
