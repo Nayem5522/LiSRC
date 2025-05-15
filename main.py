@@ -35,6 +35,13 @@ feedback_collection = db["feedback"]
 stats_collection = db["stats"]
 users_collection = db["users"]
 
+# --- Global Notification Setting Initialization ---
+settings_collection = db["settings"]
+
+# Initialize global_notify setting if not exists
+if settings_collection.count_documents({"key": "global_notify"}) == 0:
+    settings_collection.insert_one({"key": "global_notify", "value": True})
+
 # Flask for uptime
 flask_app = Flask(__name__)
 
@@ -59,14 +66,18 @@ async def save_channel_post(client, message: Message):
         }
         collection.update_one({"message_id": message.id}, {"$set": doc}, upsert=True)
 
-        # Notify all users about new movie (check notify status)
-        name_line = text.split("\n")[0][:100]
-        notify_text = f"**নতুন মুভি আপলোড হয়েছে:**\n{name_line}\n\nএখনই এই নাম দিয়ে সার্চ করে দেখুন!"
-        for user in users_collection.find({"notify": {"$ne": False}}):  # যারা notify False নেই তাদের
-            try:
-                await client.send_message(user["_id"], notify_text)
-            except:
-                pass
+        # Check global notify status before notifying users
+        global_notify_setting = settings_collection.find_one({"key": "global_notify"})
+        global_notify = global_notify_setting["value"] if global_notify_setting else True
+
+        if global_notify:
+            name_line = text.split("\n")[0][:100]
+            notify_text = f"**নতুন মুভি আপলোড হয়েছে:**\n{name_line}\n\nএখনই এই নাম দিয়ে সার্চ করে দেখুন!"
+            for user in users_collection.find({"notify": {"$ne": False}}):  # যারা notify False নেই তাদের
+                try:
+                    await client.send_message(user["_id"], notify_text)
+                except:
+                    pass
 
 def extract_year(text):
     match = re.search(r"(19|20)\d{2}", text)
@@ -198,6 +209,18 @@ async def notify_cmd(client, message):
     notify_status = True if choice == "on" else False
     users_collection.update_many({}, {"$set": {"notify": notify_status}})
     await message.reply(f"Notification has been turned {'ON' if notify_status else 'OFF'} for all users.")
+
+# --- Global Notify Control Command for Admin ---
+@app.on_message(filters.private & filters.command("globalnotify") & filters.user(ADMIN_ID))
+async def global_notify_cmd(client, message):
+    if len(message.command) < 2:
+        return await message.reply("Use /globalnotify on or /globalnotify off to control global notifications.")
+    choice = message.command[1].lower()
+    if choice not in ["on", "off"]:
+        return await message.reply("Invalid option! Use /globalnotify on or /globalnotify off.")
+    status = True if choice == "on" else False
+    settings_collection.update_one({"key": "global_notify"}, {"$set": {"value": status}})
+    await message.reply(f"Global notification has been turned {'ON' if status else 'OFF'}.")
 
 # ------------ এখানে নতুন ডিলিট কমান্ডগুলো যুক্ত করলাম ------------ #
 
