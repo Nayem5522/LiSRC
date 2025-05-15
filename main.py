@@ -67,7 +67,7 @@ async def save_channel_post(client, message: Message):
             except: pass
 
 def extract_year(text):
-    match = re.search(r"(19|20)\\d{2}", text)
+    match = re.search(r"(19|20)\d{2}", text)
     return match.group() if match else None
 
 def extract_language(text):
@@ -77,7 +77,8 @@ def extract_language(text):
             return lang
     return "Unknown"
 
-@app.on_message(filters.private | filters.group & filters.command("start"))
+# Start command handler (filter fixed)
+@app.on_message(filters.command("start") & (filters.private | filters.group))
 async def start(client, message):
     users_collection.update_one({"_id": message.from_user.id}, {"$set": {"joined": datetime.utcnow()}}, upsert=True)
     buttons = InlineKeyboardMarkup([
@@ -89,6 +90,7 @@ async def start(client, message):
         reply_markup=buttons
     )
 
+# Feedback command
 @app.on_message(filters.private & filters.command("feedback"))
 async def feedback_cmd(client, message):
     fb = message.text.split(" ", 1)
@@ -97,6 +99,7 @@ async def feedback_cmd(client, message):
     feedback_collection.insert_one({"user": message.from_user.id, "text": fb[1], "time": datetime.utcnow()})
     await message.reply("Thanks for your feedback!")
 
+# Broadcast command (admin only)
 @app.on_message(filters.private & filters.command("broadcast") & filters.user(ADMIN_ID))
 async def broadcast_cmd(client, message):
     text = message.text.split(" ", 1)
@@ -111,6 +114,7 @@ async def broadcast_cmd(client, message):
         except: pass
     await message.reply(f"Broadcast sent to {count} users.")
 
+# Stats command (admin only)
 @app.on_message(filters.private & filters.command("stats") & filters.user(ADMIN_ID))
 async def stats_cmd(client, message):
     total = users_collection.count_documents({})
@@ -118,7 +122,8 @@ async def stats_cmd(client, message):
     movies = collection.count_documents({})
     await message.reply(f"Users: {total}\nFeedbacks: {feedbacks}\nMovies in DB: {movies}")
 
-@app.on_message(filters.private | filters.group & filters.text)
+# Search handler (filter fixed, only text)
+@app.on_message(filters.text & (filters.private | filters.group))
 async def search(client, message: Message):
     users_collection.update_one({"_id": message.from_user.id}, {"$set": {"last_search": datetime.utcnow()}}, upsert=True)
     query = message.text.strip()
@@ -128,7 +133,6 @@ async def search(client, message: Message):
     if not results:
         await message.reply("কোনও ফলাফল পাওয়া যায়নি। অ্যাডমিনকে জানানো হয়েছে।")
 
-        # Inline buttons for admin to respond to user
         buttons = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ মুভি আছে", callback_data=f"has_{message.chat.id}")],
             [InlineKeyboardButton("❌ মুভি নেই", callback_data=f"no_{message.chat.id}")],
@@ -149,6 +153,7 @@ async def search(client, message: Message):
         except Exception as e:
             print(f"Error forwarding: {e}")
 
+# Admin callback reply buttons handler
 @app.on_callback_query()
 async def admin_reply_callback(client, callback_query: CallbackQuery):
     data = callback_query.data
