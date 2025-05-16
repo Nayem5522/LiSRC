@@ -1,146 +1,153 @@
-import os
-import asyncio
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from pymongo import MongoClient
-from flask import Flask
-from threading import Thread
+from datetime import datetime
+import asyncio
+import re
+import os
 
-# Configs
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-MONGO_URL = os.getenv("DATABASE_URL")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
-ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(",")))
-
+MONGO_URL = os.getenv("MONGO_URL")
 RESULTS_COUNT = 5
+ADMIN_IDS = [int(i) for i in os.getenv("ADMIN_IDS", "").split()]
 
-app = Client("movie-bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-db = MongoClient(MONGO_URL)["movie_bot"]
+app = Client("search-bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+mongo = MongoClient(MONGO_URL)
+db = mongo["autolink"]
 movies_col = db["movies"]
-feedback_col = db["feedback"]
-usage_col = db["usage"]
+users_col = db["users"]
 
-# Web server for Render
-flask_app = Flask(__name__)
-@flask_app.route('/')
-def home():
-    return "Bot is running!"
+def clean_text(text):
+    return re.sub(r"[^a-zA-Z0-9]", "", text).lower()
 
-def run_web():
-    flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
-
-Thread(target=run_web).start()
-
-# Save new messages from channel
-@app.on_message(filters.channel & filters.chat(CHANNEL_ID))
-async def save_channel_message(client, message):
-    title = message.caption or message.text
-    if not title:
+@app.on_message(filters.channel)
+async def save_channel_messages(client, message):
+    if not message.text and not message.caption:
         return
-    movies_col.insert_one({
-        "title": title,
-        "message_id": message.message_id,
-        "language": "Bengali" if "Bengali" in title else "Hindi" if "Hindi" in title else "English"
-    })
+    title = message.text or message.caption
+    title = title.split("\n")[0][:100]
+    lang = "Bengali" if "BN" in title.upper() else "Hindi" if "HIN" in title.upper() else "English" if "ENG" in title.upper() else "Unknown"
+    year_match = re.search(r'(19|20)\d{2}', title)
+    year = year_match.group() if year_match else "Unknown"
+    type_ = "Movie" if "MOVIE" in title.upper() else "Web Series" if "SERIES" in title.upper() else "Unknown"
 
-# Start command
-@app.on_message(filters.command("start"))
-async def start(client, message):
-    await message.reply("Welcome to the Movie Bot! Send me a movie name to search.")
+    if not movies_col.find_one({"message_id": message.id}):
+        movies_col.insert_one({
+            "message_id": message.id,
+            "title": title,
+            "language": lang,
+            "year": year,
+            "type": type_
+        })
 
-# Search handler
-@app.on_message(filters.text & ~filters.private)
-async def ignore_group(client, message):
-    await message.reply("Please message me in private.")
+@app.on_message(filters.text & (filters.private | filters.group))
+async def search(_, msg):
+    raw_query = msg.text.strip()
+    query = clean_text(raw_query)
+    users_col.update_one({"_id": msg.from_user.id}, {"$set": {"last_search": datetime.utcnow()}}, upsert=True)
 
-@app.on_message(filters.private & filters.text & ~filters.command(["start", "stats", "broadcast"]))
-async def search_movie(client, message):
-    query = message.text
-    usage_col.update_one({"user_id": message.from_user.id}, {"$inc": {"count": 1}}, upsert=True)
+    all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1, "year": 1, "type": 1}))
+    exact_match = [m for m in all_movies if clean_text(m.get("title", "")) == query]
 
-    query_regex = {"$regex": query, "$options": "i"}
-    results = list(movies_col.find({"title": query_regex}, {"title": 1, "message_id": 1, "language": 1}))
+    if exact_match:
+        try:
+            for m in exact_match[:RESULTS_COUNT]:
+                await app.forward_messages(msg.chat.id, CHANNEL_ID, m["message_id"])
+                await asyncio.sleep(1)
+            return
+        except:
+            await msg.reply("মুভি পাঠাতে সমস্যা হয়েছে।")
+            return
 
-    if results:
-        buttons = [[InlineKeyboardButton(res["title"][:40], callback_data=f"movie_{res['message_id']}")] for res in results[:RESULTS_COUNT]]
-        lang_buttons = [
-            InlineKeyboardButton("Bengali", callback_data=f"lang_Bengali_{query}"),
-            InlineKeyboardButton("Hindi", callback_data=f"lang_Hindi_{query}"),
-            InlineKeyboardButton("English", callback_data=f"lang_English_{query}")
+    suggestions = [m for m in all_movies if re.search(re.escape(raw_query), m.get("title", ""), re.IGNORECASE)]
+    if suggestions:
+        buttons = [
+            [InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")]
+            for m in suggestions[:RESULTS_COUNT]
         ]
-        buttons.append(lang_buttons)
-        await message.reply("Search results:", reply_markup=InlineKeyboardMarkup(buttons))
-    else:
-        await message.reply("No results found.")
-        for admin_id in ADMIN_IDS:
-            try:
-                await client.send_message(admin_id, f"No results for: {query}")
-            except:
-                pass
 
-# Callback query handler
+        filter_buttons = [
+            [
+                InlineKeyboardButton("Bengali", callback_data=f"lang_Bengali_{query}"),
+                InlineKeyboardButton("Hindi", callback_data=f"lang_Hindi_{query}"),
+                InlineKeyboardButton("English", callback_data=f"lang_English_{query}")
+            ],
+            [
+                InlineKeyboardButton("2023", callback_data=f"year_2023_{query}"),
+                InlineKeyboardButton("2024", callback_data=f"year_2024_{query}"),
+                InlineKeyboardButton("2025", callback_data=f"year_2025_{query}")
+            ],
+            [
+                InlineKeyboardButton("Movie", callback_data=f"type_movie_{query}"),
+                InlineKeyboardButton("Web Series", callback_data=f"type_series_{query}")
+            ]
+        ]
+
+        buttons.extend(filter_buttons)
+        await msg.reply("আপনার মুভির নাম মিলতে পারে, নিচের থেকে সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    await msg.reply("কোনও ফলাফল পাওয়া যায়নি। অ্যাডমিনকে জানানো হয়েছে।")
+    btn = InlineKeyboardMarkup([
+        [InlineKeyboardButton("\u2705 মুভি আছে", callback_data=f"has_{msg.chat.id}")],
+        [InlineKeyboardButton("\u274C নেই", callback_data=f"no_{msg.chat.id}")],
+        [InlineKeyboardButton("\u23F3 আসবে", callback_data=f"soon_{msg.chat.id}")],
+        [InlineKeyboardButton("\u270F\uFE0F ভুল নাম", callback_data=f"wrong_{msg.chat.id}")]
+    ])
+    for admin_id in ADMIN_IDS:
+        await app.send_message(admin_id, f"\u2757 ইউজার `{msg.from_user.id}` `{msg.from_user.first_name}` খুঁজেছে: **{raw_query}**\n\nফলাফল পাওয়া যায়নি। নিচে বাটন থেকে উত্তর দিন।", reply_markup=btn)
+
 @app.on_callback_query()
-async def handle_callback(client, cq):
+async def callback_handler(_, cq: CallbackQuery):
     data = cq.data
-
     if data.startswith("movie_"):
         msg_id = int(data.split("_")[1])
-        try:
-            await client.copy_message(chat_id=cq.message.chat.id, from_chat_id=CHANNEL_ID, message_id=msg_id)
-        except:
-            await cq.message.reply("Couldn't forward the movie.")
+        await app.forward_messages(cq.message.chat.id, CHANNEL_ID, msg_id)
         await cq.answer()
 
     elif data.startswith("lang_"):
         _, lang, query = data.split("_", 2)
-        query_regex = {"$regex": query, "$options": "i"}
-        filtered_movies = list(movies_col.find({"language": lang, "title": query_regex}, {"title": 1, "message_id": 1}))
-
-        if filtered_movies:
-            buttons = [[InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")] for m in filtered_movies[:RESULTS_COUNT]]
-            await cq.message.edit_text(f"ফলাফল '{lang}' ভাষায়:", reply_markup=InlineKeyboardMarkup(buttons))
+        lang_movies = movies_col.find({"language": lang})
+        matches = [m for m in lang_movies if re.search(re.escape(query), m.get("title", ""), re.IGNORECASE)]
+        if matches:
+            for m in matches[:RESULTS_COUNT]:
+                await app.forward_messages(cq.message.chat.id, CHANNEL_ID, m["message_id"])
+                await asyncio.sleep(1)
         else:
-            await cq.message.edit_text("এই ভাষায় কিছুই পাওয়া যায়নি।")
+            await cq.message.reply("এই ভাষায় কিছু পাওয়া যায়নি।")
         await cq.answer()
 
-# Broadcast command
-@app.on_message(filters.command("broadcast") & filters.user(ADMIN_IDS))
-async def broadcast(client, message):
-    if not message.reply_to_message:
-        await message.reply("Reply to a message to broadcast.")
-        return
+    elif data.startswith("year_"):
+        _, year, query = data.split("_", 2)
+        year_movies = movies_col.find({"year": year})
+        matches = [m for m in year_movies if re.search(re.escape(query), m.get("title", ""), re.IGNORECASE)]
+        if matches:
+            for m in matches[:RESULTS_COUNT]:
+                await app.forward_messages(cq.message.chat.id, CHANNEL_ID, m["message_id"])
+                await asyncio.sleep(1)
+        else:
+            await cq.message.reply("এই বছরে কিছু পাওয়া যায়নি।")
+        await cq.answer()
 
-    users = usage_col.find()
-    count = 0
-    for user in users:
-        try:
-            await message.reply_to_message.copy(user["user_id"])
-            count += 1
-        except:
-            pass
-    await message.reply(f"Broadcast sent to {count} users.")
+    elif data.startswith("type_"):
+        _, mtype, query = data.split("_", 2)
+        type_movies = movies_col.find({"type": re.compile(mtype, re.IGNORECASE)})
+        matches = [m for m in type_movies if re.search(re.escape(query), m.get("title", ""), re.IGNORECASE)]
+        if matches:
+            for m in matches[:RESULTS_COUNT]:
+                await app.forward_messages(cq.message.chat.id, CHANNEL_ID, m["message_id"])
+                await asyncio.sleep(1)
+        else:
+            await cq.message.reply("এই টাইপে কিছু পাওয়া যায়নি।")
+        await cq.answer()
 
-# Stats command
-@app.on_message(filters.command("stats") & filters.user(ADMIN_IDS))
-async def stats(client, message):
-    total_users = usage_col.count_documents({})
-    total_movies = movies_col.count_documents({})
-    total_feedback = feedback_col.count_documents({})
-    await message.reply(f"Users: {total_users}\nMovies: {total_movies}\nFeedback: {total_feedback}")
+    elif data.startswith("has_") or data.startswith("no_") or data.startswith("soon_") or data.startswith("wrong_"):
+        status, uid = data.split("_")
+        tag = {"has": "✅ আছে", "no": "❌ নেই", "soon": "⏳ আসবে", "wrong": "✏️ ভুল নাম"}[status]
+        await app.send_message(int(uid), f"আপনার অনুরোধের জন্য: {tag}")
+        await cq.answer("ইউজারকে জানানো হয়েছে")
 
-# Feedback
-@app.on_message(filters.command("feedback"))
-async def feedback(client, message):
-    if len(message.command) < 2:
-        await message.reply("Usage: /feedback [your message]")
-        return
-    feedback_col.insert_one({
-        "user_id": message.from_user.id,
-        "message": message.text.split(None, 1)[1]
-    })
-    await message.reply("Thanks for your feedback!")
-
-# Run bot
 app.run()
