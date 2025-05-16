@@ -12,7 +12,7 @@ API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
-RESULTS_COUNT = int(os.getenv("RESULTS_COUNT", 5))
+RESULTS_COUNT = int(os.getenv("RESULTS_COUNT", 10))
 ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(",")))
 DATABASE_URL = os.getenv("DATABASE_URL")
 UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL", "https://t.me/CTGMovieOfficial")
@@ -130,44 +130,56 @@ def clean_text(text):
 
 @app.on_message(filters.text & (filters.private | filters.group))
 async def search(_, msg):
-    query = clean_text(msg.text.strip())
+    raw_query = msg.text.strip()
+    query = clean_text(raw_query)
     users_col.update_one({"_id": msg.from_user.id}, {"$set": {"last_search": datetime.utcnow()}}, upsert=True)
-    all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1}))
-    exact_match = None
-    suggestions = []
+
+    # Exact match
+    all_movies = movies_col.find({}, {"title": 1, "message_id": 1})
+    exact_match = []
     for movie in all_movies:
-        title_clean = clean_text(movie.get("title", ""))
-        if title_clean == query:
-            exact_match = movie
-            break
-        if query in title_clean:
-            suggestions.append(movie)
-            if len(suggestions) >= RESULTS_COUNT:
-                break
+        title = movie.get("title", "")
+        if clean_text(title) == query:
+            exact_match.append(movie)
+
     if exact_match:
         try:
-            m = await app.forward_messages(msg.chat.id, CHANNEL_ID, exact_match["message_id"])
-            await asyncio.sleep(30)
-            await app.delete_messages(msg.chat.id, m.id)
+            for m in exact_match[:RESULTS_COUNT]:
+                await app.forward_messages(msg.chat.id, CHANNEL_ID, m["message_id"])
+                await asyncio.sleep(1)
         except:
             await msg.reply("মুভি পাঠাতে সমস্যা হয়েছে।")
-    elif suggestions:
+        return
+
+    # MongoDB regex suggestion
+    suggestions = list(movies_col.find(
+        {"title": {"$regex": f".*{re.escape(raw_query)}.*", "$options": "i"}},
+        {"title": 1, "message_id": 1}
+    ))
+
+    if suggestions:
         buttons = []
-        for movie in suggestions:
+        for movie in suggestions[:RESULTS_COUNT]:
             title = movie.get("title", "Unknown")
             mid = movie.get("message_id")
             buttons.append([InlineKeyboardButton(title[:40], callback_data=f"movie_{mid}")])
         await msg.reply("আপনার মুভির নাম মিলতে পারে, নিচের থেকে সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(buttons))
-    else:
-        await msg.reply("কোনও ফলাফল পাওয়া যায়নি। অ্যাডমিনকে জানানো হয়েছে।")
-        btn = InlineKeyboardMarkup([
-            [InlineKeyboardButton("\u2705 মুভি আছে", callback_data=f"has_{msg.chat.id}")],
-            [InlineKeyboardButton("\u274C নেই", callback_data=f"no_{msg.chat.id}")],
-            [InlineKeyboardButton("\u23F3 আসবে", callback_data=f"soon_{msg.chat.id}")],
-            [InlineKeyboardButton("\u270F\uFE0F ভুল নাম", callback_data=f"wrong_{msg.chat.id}")]
-        ])
-        for admin_id in ADMIN_IDS:
-            await app.send_message(admin_id, f"\u2757 ইউজার `{msg.from_user.id}` `{msg.from_user.first_name}` খুঁজেছে: **{msg.text.strip()}**\n\nফলাফল পাওয়া যায়নি। নিচে বাটন থেকে উত্তর দিন।", reply_markup=btn)
+        return
+
+    # No result found
+    await msg.reply("কোনও ফলাফল পাওয়া যায়নি। অ্যাডমিনকে জানানো হয়েছে।")
+    btn = InlineKeyboardMarkup([
+        [InlineKeyboardButton("\u2705 মুভি আছে", callback_data=f"has_{msg.chat.id}")],
+        [InlineKeyboardButton("\u274C নেই", callback_data=f"no_{msg.chat.id}")],
+        [InlineKeyboardButton("\u23F3 আসবে", callback_data=f"soon_{msg.chat.id}")],
+        [InlineKeyboardButton("\u270F\uFE0F ভুল নাম", callback_data=f"wrong_{msg.chat.id}")]
+    ])
+    for admin_id in ADMIN_IDS:
+        await app.send_message(
+            admin_id,
+            f"\u2757 ইউজার `{msg.from_user.id}` `{msg.from_user.first_name}` খুঁজেছে: **{raw_query}**\n\nফলাফল পাওয়া যায়নি। নিচে বাটন থেকে উত্তর দিন।",
+            reply_markup=btn
+        )
 
 @app.on_callback_query()
 async def callback_handler(_, cq: CallbackQuery):
@@ -187,7 +199,7 @@ async def callback_handler(_, cq: CallbackQuery):
             "has": "\u2705 মুভিটি ডাটাবেজে আছে। নামটি সঠিকভাবে লিখে আবার চেষ্টা করুন।",
             "no": "\u274C এই মুভিটি ডাটাবেজে নেই।",
             "soon": "\u23F3 এই মুভিটি শিগগির আসবে।",
-            "wrong": "\u270F\uFE0F নামটি ভুল হয়েছে। আবার চেষ্টা করুন।"
+            "wrong": "\u270F\uFE0F নামটি ভুল হয়েছে। আবার চেষ্টা করুন।"
         }
         if action in responses:
             try:
