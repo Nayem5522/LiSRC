@@ -150,9 +150,9 @@ async def search(_, msg):
     suggestions = [m for m in all_movies if re.search(re.escape(raw_query), m.get("title", ""), re.IGNORECASE)]
     if suggestions:
         lang_buttons = [
-            InlineKeyboardButton("Bengali", callback_data=f"lang_Bengali_{raw_query}"),
-            InlineKeyboardButton("Hindi", callback_data=f"lang_Hindi_{raw_query}"),
-            InlineKeyboardButton("English", callback_data=f"lang_English_{raw_query}")
+            InlineKeyboardButton("Bengali", callback_data=f"lang_Bengali_{query}"),
+            InlineKeyboardButton("Hindi", callback_data=f"lang_Hindi_{query}"),
+            InlineKeyboardButton("English", callback_data=f"lang_English_{query}")
         ]
         buttons = [[InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")] for m in suggestions[:RESULTS_COUNT]]
         buttons.append(lang_buttons)
@@ -181,12 +181,12 @@ async def callback_handler(_, cq: CallbackQuery):
             await cq.message.reply("মুভি পাঠাতে সমস্যা হয়েছে।")
             await cq.answer()
     elif data.startswith("lang_"):
-        _, lang, raw_query = data.split("_", 2)
-        query = clean_text(raw_query)
-        lang_movies = movies_col.find({"language": lang})
-        matches = [m for m in lang_movies if query in clean_text(m.get("title", ""))]
-        if matches:
-            for m in matches[:RESULTS_COUNT]:
+        _, lang, query = data.split("_", 2)
+        query_regex = {"$regex": query, "$options": "i"}
+        filtered_movies = movies_col.find({"language": lang, "title": query_regex})
+        results = list(filtered_movies)
+        if results:
+            for m in results[:RESULTS_COUNT]:
                 await app.forward_messages(cq.message.chat.id, CHANNEL_ID, m["message_id"])
                 await asyncio.sleep(1)
         else:
