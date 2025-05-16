@@ -156,75 +156,34 @@ async def delete_one(_, msg):
 def clean_text(text):
     return re.sub(r'[^a-zA-Z0-9]', '', text.lower())
 
+def get_language_buttons(query):
+    buttons = [
+        [InlineKeyboardButton("All", callback_data=f"lang_All_{query}")],
+        [InlineKeyboardButton("Bengali", callback_data=f"lang_Bengali_{query}")],
+        [InlineKeyboardButton("Hindi", callback_data=f"lang_Hindi_{query}")],
+        [InlineKeyboardButton("English", callback_data=f"lang_English_{query}")]
+    ]
+    return InlineKeyboardMarkup(buttons)
+
+async def send_movie_results(chat_id, movies):
+    for m in movies[:RESULTS_COUNT]:
+        try:
+            fmsg = await app.forward_messages(chat_id, CHANNEL_ID, m["message_id"])
+            await asyncio.sleep(1)
+        except:
+            pass
+
 @app.on_message(filters.text & (filters.private | filters.group))
 async def search(_, msg):
     raw_query = msg.text.strip()
     query = clean_text(raw_query)
     users_col.update_one({"_id": msg.from_user.id}, {"$set": {"last_search": datetime.utcnow()}}, upsert=True)
 
-    # find exact match
-    all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
-    exact_match = []
-    suggestions = []
-
-    for movie in all_movies:
-        title = movie.get("title", "")
-        title_clean = clean_text(title)
-
-        if title_clean == query:
-            exact_match.append(movie)
-        elif query in title_clean:
-            suggestions.append(movie)
-
-    if exact_match:
-        buttons = [
-            [InlineKeyboardButton("All Languages", callback_data=f"lang_all_{query}")]
-        ]
-        # Add language buttons
-        languages = ["Bengali", "Hindi", "English", "Bangla"]
-        for lang in languages:
-            buttons.append([InlineKeyboardButton(lang, callback_data=f"lang_{lang.lower()}_{query}")])
-
-        reply = await msg.reply(
-            "Multiple languages are available. নিচের বাটন থেকে ভাষা নির্বাচন করুন:",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
-        await asyncio.sleep(30)
-        await reply.delete()
-        await msg.delete()
-        return
-
-    elif suggestions:
-        buttons = []
-        for movie in suggestions[:RESULTS_COUNT]:
-            title = movie.get("title", "Unknown")
-            mid = movie.get("message_id")
-            buttons.append([InlineKeyboardButton(title[:40], callback_data=f"movie_{mid}")])
-        reply = await msg.reply("আপনার মুভির নাম মিলতে পারে, নিচের থেকে সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(buttons))
-        await asyncio.sleep(30)
-        await reply.delete()
-        await msg.delete()
-        return
-    else:
-        reply = await msg.reply("কোনও ফলাফল পাওয়া যায়নি। অ্যাডমিনকে জানানো হয়েছে।")
-        await asyncio.sleep(30)
-        await reply.delete()
-        await msg.delete()
-
-        btn = InlineKeyboardMarkup([
-            [InlineKeyboardButton("\u2705 মুভি আছে", callback_data=f"has_{msg.chat.id}")],
-            [InlineKeyboardButton("\u274C নেই", callback_data=f"no_{msg.chat.id}")],
-            [InlineKeyboardButton("\u23F3 আসবে", callback_data=f"soon_{msg.chat.id}")],
-            [InlineKeyboardButton("\u270F\uFE0F ভুল নাম", callback_data=f"wrong_{msg.chat.id}")]
-        ])
-        for admin_id in ADMIN_IDS:
-            try:
-                await app.send_message(
-                    admin_id,
-                    f"\u2757 ইউজার `{msg.from_user.id}` `{msg.from_user.first_name}` খুঁজেছে: **{raw_query}**\n\nফলাফল পাওয়া যায়নি। নিচে বাটন থেকে উত্তর দিন।",
-                    reply_markup=btn
-                )
-            except: pass
+    # Show language buttons first, with query embedded
+    reply = await msg.reply("নিচের ভাষা বাটন থেকে আপনার পছন্দের ভাষা নির্বাচন করুন:", reply_markup=get_language_buttons(query))
+    await asyncio.sleep(60)
+    await reply.delete()
+    await msg.delete()
 
 @app.on_callback_query()
 async def callback_handler(_, cq: CallbackQuery):
@@ -246,8 +205,88 @@ async def callback_handler(_, cq: CallbackQuery):
             await cq.answer()
 
     elif data.startswith("lang_"):
+        # data format: lang_<language>_<original_query>
         parts = data.split("_", 2)
-        if len(parts) == 3:
-            lang = parts[1]
-            query = parts[2]
-            query_clean =
+        if len(parts) < 3:
+            await cq.answer("Invalid request", show_alert=True)
+            return
+
+        lang = parts[1]
+        orig_query = parts[2]
+        query = clean_text(orig_query)
+
+        all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
+
+        exact_match = []
+        suggestions = []
+
+        for movie in all_movies:
+            title = movie.get("title", "")
+            title_clean = clean_text(title)
+            movie_lang = movie.get("language", "Unknown")
+
+            # Language filter
+            if lang != "All" and movie_lang.lower() != lang.lower():
+                continue
+
+            if title_clean == query:
+                exact_match.append(movie)
+            elif query in title_clean:
+                suggestions.append(movie)
+
+        if exact_match:
+            await send_movie_results(cq.message.chat.id, exact_match)
+            await cq.message.delete()
+            await cq.answer(f"{len(exact_match)} মুভি পাওয়া গেছে।")
+            return
+
+        elif suggestions:
+            buttons = []
+            for movie in suggestions[:RESULTS_COUNT]:
+                title = movie.get("title", "Unknown")
+                mid = movie.get("message_id")
+                buttons.append([InlineKeyboardButton(title[:40], callback_data=f"movie_{mid}")])
+            await cq.message.edit_text("আপনার মুভির নাম মিলতে পারে, নিচের থেকে সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(buttons))
+            await cq.answer(f"{len(suggestions)} টি সাদৃশ্য মুভি পাওয়া গেছে।")
+            return
+
+        else:
+            await cq.message.edit_text("কোনও ফলাফল পাওয়া যায়নি। অ্যাডমিনকে জানানো হয়েছে।")
+            await cq.answer("No results found", show_alert=True)
+
+            btn = InlineKeyboardMarkup([
+                [InlineKeyboardButton("\u2705 মুভি আছে", callback_data=f"has_{cq.from_user.id}")],
+                [InlineKeyboardButton("\u274C নেই", callback_data=f"no_{cq.from_user.id}")],
+                [InlineKeyboardButton("\u23F3 আসবে", callback_data=f"soon_{cq.from_user.id}")],
+                [InlineKeyboardButton("\u270F\uFE0F ভুল নাম", callback_data=f"wrong_{cq.from_user.id}")]
+            ])
+            for admin_id in ADMIN_IDS:
+                try:
+                    await app.send_message(
+                        admin_id,
+                        f"\u2757 ইউজার `{cq.from_user.id}` `{cq.from_user.first_name}` খুঁজেছে: **{orig_query}**\n\nফলাফল পাওয়া যায়নি। নিচে বাটন থেকে উত্তর দিন।",
+                        reply_markup=btn
+                    )
+                except: pass
+
+    elif "_" in data:
+        action, user_id = data.split("_")
+        uid = int(user_id)
+        responses = {
+            "has": "\u2705 মুভিটি ডাটাবেজে আছে। নামটি সঠিকভাবে লিখে আবার চেষ্টা করুন।",
+            "no": "\u274C এই মুভিটি ডাটাবেজে নেই।",
+            "soon": "\u23F3 এই মুভিটি শিগগির আসবে।",
+            "wrong": "\u270F\uFE0F নামটি ভুল হয়েছে। আবার চেষ্টা করুন।"
+        }
+        if action in responses:
+            try:
+                reply = await app.send_message(uid, responses[action])
+                await cq.answer("রিপ্লাই পাঠানো হয়েছে", show_alert=True)
+                await asyncio.sleep(30)
+                await reply.delete()
+            except:
+                await cq.answer("ইউজারকে মেসেজ পাঠানো যায়নি", show_alert=True)
+
+if __name__ == "__main__":
+    Thread(target=run).start()
+    app.run()
