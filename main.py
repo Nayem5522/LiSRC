@@ -40,7 +40,6 @@ flask_app = Flask(__name__)
 @flask_app.route("/")
 def home():
     return "Bot is running!"
-
 Thread(target=lambda: flask_app.run(host="0.0.0.0", port=8080)).start()
 
 # Helpers
@@ -100,6 +99,14 @@ async def feedback(_, msg):
     m = await msg.reply("Thanks for your feedback!")
     asyncio.create_task(delete_message_later(m.chat.id, m.id))
 
+@app.on_message(filters.command("notify") & filters.private)
+async def toggle_notify(_, msg):
+    if len(msg.command) < 2 or msg.command[1].lower() not in ["on", "off"]:
+        return await msg.reply("Usage: /notify on | off")
+    state = msg.command[1].lower() == "on"
+    users_col.update_one({"_id": msg.from_user.id}, {"$set": {"notify": state}}, upsert=True)
+    await msg.reply(f"Notification {'enabled' if state else 'disabled'}.")
+
 @app.on_message(filters.command("broadcast") & filters.user(ADMIN_IDS))
 async def broadcast(_, msg):
     if len(msg.command) < 2:
@@ -116,6 +123,23 @@ async def broadcast(_, msg):
 @app.on_message(filters.command("stats") & filters.user(ADMIN_IDS))
 async def stats(_, msg):
     await msg.reply(f"Users: {users_col.count_documents({})}\nMovies: {movies_col.count_documents({})}\nFeedbacks: {feedback_col.count_documents({})}")
+
+@app.on_message(filters.command("delete_movie") & filters.user(ADMIN_IDS))
+async def delete_movie(_, msg):
+    if len(msg.command) < 2:
+        return await msg.reply("Usage: /delete_movie <movie name>")
+    query = clean_text(" ".join(msg.command[1:]))
+    deleted = 0
+    for m in movies_col.find():
+        if clean_text(m.get("title", "")) == query:
+            movies_col.delete_one({"message_id": m["message_id"]})
+            deleted += 1
+    await msg.reply(f"{deleted} movie(s) deleted with name matching: {query}")
+
+@app.on_message(filters.command("delete_all") & filters.user(ADMIN_IDS))
+async def delete_all(_, msg):
+    movies_col.delete_many({})
+    await msg.reply("All movies have been deleted from the database.")
 
 @app.on_message(filters.text)
 async def search(_, msg):
