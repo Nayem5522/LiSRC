@@ -205,7 +205,6 @@ async def callback_handler(_, cq: CallbackQuery):
             await cq.answer()
 
     elif data.startswith("lang_"):
-        # data format: lang_<language>_<original_query>
         parts = data.split("_", 2)
         if len(parts) < 3:
             await cq.answer("Invalid request", show_alert=True)
@@ -225,7 +224,6 @@ async def callback_handler(_, cq: CallbackQuery):
             title_clean = clean_text(title)
             movie_lang = movie.get("language", "Unknown")
 
-            # Language filter
             if lang != "All" and movie_lang.lower() != lang.lower():
                 continue
 
