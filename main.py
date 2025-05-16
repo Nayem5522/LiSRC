@@ -1,4 +1,3 @@
-# (import অংশ অপরিবর্তিত)
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pymongo import MongoClient
@@ -9,7 +8,6 @@ import re
 from datetime import datetime
 import asyncio
 
-# (env config অপরিবর্তিত)
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -22,7 +20,6 @@ START_PIC = os.getenv("START_PIC", "https://i.ibb.co/prnGXMr3/photo-2025-05-16-0
 
 app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# (Mongo setup অপরিবর্তিত)
 mongo = MongoClient(DATABASE_URL)
 db = mongo["movie_bot"]
 movies_col = db["movies"]
@@ -34,16 +31,20 @@ settings_col = db["settings"]
 if not settings_col.find_one({"key": "global_notify"}):
     settings_col.insert_one({"key": "global_notify", "value": True})
 
-# (Flask)
 flask_app = Flask(__name__)
+
 @flask_app.route("/")
-def home(): return "Bot is running!"
-def run(): flask_app.run(host="0.0.0.0", port=8080)
+def home():
+    return "Bot is running!"
+
+def run():
+    flask_app.run(host="0.0.0.0", port=8080)
 
 @app.on_message(filters.chat(CHANNEL_ID))
 async def save_post(_, msg: Message):
     text = msg.text or msg.caption
-    if not text: return
+    if not text:
+        return
     movie = {
         "message_id": msg.id,
         "title": text,
@@ -59,13 +60,14 @@ async def save_post(_, msg: Message):
         for user in users_col.find({"notify": {"$ne": False}}):
             try:
                 await app.send_message(user["_id"], f"নতুন মুভি আপলোড হয়েছে:\n{text.splitlines()[0][:100]}\n\nএখনই সার্চ করে দেখুন!")
-            except: pass
+            except:
+                pass
 
-def extract_year(text): 
+def extract_year(text):
     match = re.search(r"(19|20)\d{2}", text)
     return match.group() if match else None
 
-def extract_language(text): 
+def extract_language(text):
     langs = ["Bengali", "Bangla", "Hindi", "English"]
     return next((lang for lang in langs if lang.lower() in text.lower()), "Unknown")
 
@@ -83,7 +85,7 @@ async def start(_, msg):
 
 @app.on_message(filters.command("feedback") & filters.private)
 async def feedback(_, msg):
-    if len(msg.command) < 2: 
+    if len(msg.command) < 2:
         reply = await msg.reply("Please write something after /feedback.")
     else:
         feedback_col.insert_one({"user": msg.from_user.id, "text": msg.text.split(None, 1)[1], "time": datetime.utcnow()})
@@ -94,15 +96,16 @@ async def feedback(_, msg):
 
 @app.on_message(filters.command("broadcast") & filters.user(ADMIN_IDS))
 async def broadcast(_, msg):
-    if len(msg.command) < 2: 
+    if len(msg.command) < 2:
         reply = await msg.reply("Usage: /broadcast Your message here")
     else:
         count = 0
         for user in users_col.find():
-            try: 
+            try:
                 await app.send_message(user["_id"], msg.text.split(None, 1)[1])
                 count += 1
-            except: pass
+            except:
+                pass
         reply = await msg.reply(f"Broadcast sent to {count} users.")
     await asyncio.sleep(30)
     await reply.delete()
@@ -147,11 +150,11 @@ async def delete_all(_, msg):
 
 @app.on_message(filters.command("delete_movie") & filters.user(ADMIN_IDS))
 async def delete_one(_, msg):
-    try: 
+    try:
         mid = int(msg.command[1])
         result = movies_col.delete_one({"message_id": mid})
         reply = await msg.reply("Deleted successfully." if result.deleted_count else "Movie not found.")
-    except: 
+    except:
         reply = await msg.reply("Usage: /delete_movie message_id")
     await asyncio.sleep(30)
     await reply.delete()
@@ -180,6 +183,7 @@ async def search(_, msg):
             suggestions.append(movie)
 
     if exact_match:
+        # Forward exact matches directly
         try:
             for m in exact_match[:RESULTS_COUNT]:
                 fmsg = await app.forward_messages(msg.chat.id, CHANNEL_ID, m["message_id"])
@@ -193,24 +197,28 @@ async def search(_, msg):
             await err.delete()
             await msg.delete()
         return
+
     elif suggestions:
-        buttons = []
-        # Language filter buttons
+        # Show suggestions with language filter buttons
         languages = ["Bengali", "Hindi", "English", "Bangla"]
-        for lang in languages:
-            buttons.append([InlineKeyboardButton(lang, callback_data=f"lang_{lang}_{query}")])
+        lang_buttons = [
+            [InlineKeyboardButton(lang, callback_data=f"lang_{lang}_{raw_query}")]
+            for lang in languages
+        ]
 
-        # Movie title buttons
-        for movie in suggestions[:RESULTS_COUNT]:
-            title = movie.get("title", "Unknown")
-            mid = movie.get("message_id")
-            buttons.append([InlineKeyboardButton(title[:40], callback_data=f"movie_{mid}")])
+        movie_buttons = [
+            [InlineKeyboardButton(movie.get("title", "Unknown")[:40], callback_data=f"movie_{movie['message_id']}")]
+            for movie in suggestions[:RESULTS_COUNT]
+        ]
 
-        reply = await msg.reply("আপনার মুভির নাম মিলতে পারে, নিচের থেকে সিলেক্ট করুন বা ভাষা নির্বাচন করুন:", reply_markup=InlineKeyboardMarkup(buttons))
+        reply_markup = InlineKeyboardMarkup(movie_buttons + lang_buttons)
+
+        reply = await msg.reply("আপনার মুভির নাম মিলতে পারে, নিচের থেকে সিলেক্ট করুন অথবা ভাষা নির্বাচন করুন:", reply_markup=reply_markup)
         await asyncio.sleep(30)
         await reply.delete()
         await msg.delete()
         return
+
     else:
         reply = await msg.reply("কোনও ফলাফল পাওয়া যায়নি। অ্যাডমিনকে জানানো হয়েছে।")
         await asyncio.sleep(30)
@@ -227,24 +235,4 @@ async def search(_, msg):
             try:
                 await app.send_message(
                     admin_id,
-                    f"\u2757 ইউজার `{msg.from_user.id}` `{msg.from_user.first_name}` খুঁজেছে: **{raw_query}**\n\nফলাফল পাওয়া যায়নি। নিচে বাটন থেকে উত্তর দিন।",
-                    reply_markup=btn
-                )
-            except: pass
-
-@app.on_callback_query()
-async def callback_handler(_, cq: CallbackQuery):
-    data = cq.data
-    if data.startswith("movie_"):
-        mid = int(data.split("_")[1])
-        try:
-            fmsg = await app.forward_messages(cq.message.chat.id, CHANNEL_ID, mid)
-            await asyncio.sleep(30)
-            await fmsg.delete()
-            await cq.message.delete()
-            await cq.answer()
-        except:
-            err = await cq.message.reply("মুভি পাঠাতে সমস্যা হয়েছে।")
-            await asyncio.sleep(30)
-            await err.delete()
-            await cq.message.delete()
+                    f"\u2757 ইউজার `{msg.from_user.id}` `{msg.from_user.first_name}` খুঁজেছে: **{raw_query}**\n\nফলাফল পাওয়া যায়নি। নিচে বাটন থেকে উত্তর
