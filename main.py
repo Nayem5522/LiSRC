@@ -71,7 +71,7 @@ async def start(_, msg):
     admin_user = await app.get_users(ADMIN_ID)
     btns = InlineKeyboardMarkup([
         [InlineKeyboardButton("Update Channel", url=UPDATE_CHANNEL)],
-        [InlineKeyboardButton("Contact Admin", url=f"https://t.me/{admin_user.username}")]
+        [InlineKeyboardButton("Contact Admin", url=f"https://t.me/ctgmovies23")]
     ])
     await msg.reply_photo(photo=START_PIC, caption="Send me a movie name to search.", reply_markup=btns)
 
