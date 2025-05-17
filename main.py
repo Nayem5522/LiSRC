@@ -7,6 +7,7 @@ import os
 import re
 from datetime import datetime
 import asyncio
+import urllib.parse
 
 # Configs
 API_ID = int(os.getenv("API_ID"))
@@ -182,8 +183,17 @@ async def search(_, msg):
         asyncio.create_task(delete_message_later(m.chat.id, m.id))
         return
 
-    alert = await msg.reply("কোনও ফলাফল পাওয়া যায়নি। অ্যাডমিনকে জানানো হয়েছে।")
+    # যদি কোন ফলাফল না পাওয়া যায় তাহলে গুগল সার্চের বাটন দেখানো হবে
+    google_search_url = "https://www.google.com/search?q=" + urllib.parse.quote(raw_query)
+    google_button = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Search on Google", url=google_search_url)]
+    ])
+    alert = await msg.reply(
+        "কোনও ফলাফল পাওয়া যায়নি। অ্যাডমিনকে জানানো হয়েছে। নিচের বাটনে ক্লিক করে গুগলে সার্চ করুন।",
+        reply_markup=google_button
+    )
     asyncio.create_task(delete_message_later(alert.chat.id, alert.id))
+
     btn = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✅ মুভি আছে", callback_data=f"has_{msg.chat.id}_{msg.id}_{raw_query}"),
