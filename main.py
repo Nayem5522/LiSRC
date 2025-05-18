@@ -3,12 +3,12 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, 
 from pymongo import MongoClient, ASCENDING
 from flask import Flask
 from threading import Thread
-from fuzzywuzzy import process
 import os
 import re
 from datetime import datetime
 import asyncio
 import urllib.parse
+from fuzzywuzzy import process
 
 # Configs
 API_ID = int(os.getenv("API_ID"))
@@ -148,10 +148,9 @@ async def notify_command(_, msg: Message):
     await msg.reply(f"✅ Global notifications {status}!")
 
 @app.on_message(filters.text)
-async def search(_, msg: Message):
+async def search(_, msg):
     raw_query = msg.text.strip()
     query = clean_text(raw_query)
-
     users_col.update_one(
         {"_id": msg.from_user.id},
         {"$set": {"last_search": datetime.utcnow()}},
@@ -161,39 +160,54 @@ async def search(_, msg: Message):
     loading = await msg.reply("🔎 লোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
     all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
 
-    # Exact match
-    exact = [m for m in all_movies if clean_text(m.get("title", "")) == query]
-    if exact:
+    # Exact match buttons only
+    exact_match = [m for m in all_movies if clean_text(m.get("title", "")) == query]
+    if exact_match:
         await loading.delete()
-        for m in exact[:RESULTS_COUNT]:
-            fwd = await app.forward_messages(msg.chat.id, CHANNEL_ID, m["message_id"])
-            asyncio.create_task(delete_message_later(msg.chat.id, fwd.id))
-            await asyncio.sleep(0.7)
+        buttons = [
+            [InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")]
+            for m in exact_match[:RESULTS_COUNT]
+        ]
+        m = await msg.reply("নিচের ফলাফল থেকে বেছে নিন:", reply_markup=InlineKeyboardMarkup(buttons))
+        asyncio.create_task(delete_message_later(m.chat.id, m.id))
         return
 
-    # Regex match
-    regex = re.compile(f".*{re.escape(raw_query)}.*", re.IGNORECASE)
-    reg_matches = list(movies_col.find({"title": regex}))
-    if reg_matches:
+    # Regex match suggestions
+    suggestions = [
+        m for m in all_movies
+        if re.search(re.escape(raw_query), m.get("title", ""), re.IGNORECASE)
+    ]
+    if suggestions:
         await loading.delete()
-        for m in reg_matches[:RESULTS_COUNT]:
-            fwd = await app.forward_messages(msg.chat.id, CHANNEL_ID, m["message_id"])
-            asyncio.create_task(delete_message_later(msg.chat.id, fwd.id))
-            await asyncio.sleep(0.7)
+        lang_buttons = [
+            InlineKeyboardButton("Bengali", callback_data=f"lang_Bengali_{query}"),
+            InlineKeyboardButton("Hindi", callback_data=f"lang_Hindi_{query}"),
+            InlineKeyboardButton("English", callback_data=f"lang_English_{query}")
+        ]
+        buttons = [
+            [InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")]
+            for m in suggestions[:RESULTS_COUNT]
+        ]
+        buttons.append(lang_buttons)
+        m = await msg.reply("আপনার মুভির নাম মিলতে পারে, নিচের থেকে সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(buttons))
+        asyncio.create_task(delete_message_later(m.chat.id, m.id))
         return
 
     # Fuzzy match
-    titles = [m.get("title", "") for m in all_movies]
+    titles = [m["title"] for m in all_movies]
     fuzzy_result = process.extractOne(raw_query, titles)
     if fuzzy_result and fuzzy_result[1] > 75:
         matched_title = fuzzy_result[0]
-        fuzzy_matches = [m for m in all_movies if m.get("title", "") == matched_title]
-        await loading.delete()
-        for m in fuzzy_matches[:RESULTS_COUNT]:
-            fwd = await app.forward_messages(msg.chat.id, CHANNEL_ID, m["message_id"])
-            asyncio.create_task(delete_message_later(msg.chat.id, fwd.id))
-            await asyncio.sleep(0.7)
-        return
+        fuzzy_matches = [m for m in all_movies if m["title"] == matched_title]
+        if fuzzy_matches:
+            await loading.delete()
+            buttons = [
+                [InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")]
+                for m in fuzzy_matches[:RESULTS_COUNT]
+            ]
+            m = await msg.reply("ফাজি ম্যাচ পাওয়া গেছে:", reply_markup=InlineKeyboardMarkup(buttons))
+            asyncio.create_task(delete_message_later(m.chat.id, m.id))
+            return
 
     await loading.delete()
     google_search_url = "https://www.google.com/search?q=" + urllib.parse.quote(raw_query)
