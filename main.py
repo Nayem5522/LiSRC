@@ -10,7 +10,6 @@ import asyncio
 import urllib.parse
 from fuzzywuzzy import process
 
-# Configs
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -23,7 +22,6 @@ START_PIC = os.getenv("START_PIC", "https://i.ibb.co/prnGXMr3/photo-2025-05-16-0
 
 app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# MongoDB setup
 mongo = MongoClient(DATABASE_URL)
 db = mongo["movie_bot"]
 movies_col = db["movies"]
@@ -32,19 +30,16 @@ stats_col = db["stats"]
 users_col = db["users"]
 settings_col = db["settings"]
 
-# Index
 movies_col.create_index([("title", ASCENDING)])
 movies_col.create_index("message_id")
 movies_col.create_index("language")
 
-# Flask
 flask_app = Flask(__name__)
 @flask_app.route("/")
 def home():
     return "Bot is running!"
 Thread(target=lambda: flask_app.run(host="0.0.0.0", port=8080)).start()
 
-# Helpers
 def clean_text(text):
     return re.sub(r'[^a-zA-Z0-9]', '', text.lower())
 
@@ -147,8 +142,8 @@ async def notify_command(_, msg: Message):
     status = "enabled" if new_value else "disabled"
     await msg.reply(f"✅ Global notifications {status}!")
 
-@app.on_message(filters.text)
-async def search(_, msg):
+@app.on_message(filters.text & ~filters.command)
+async def search(_, msg: Message):
     raw_query = msg.text.strip()
     query = clean_text(raw_query)
     users_col.update_one(
@@ -160,7 +155,6 @@ async def search(_, msg):
     loading = await msg.reply("🔎 লোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
     all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
 
-    # Exact match buttons only
     exact_match = [m for m in all_movies if clean_text(m.get("title", "")) == query]
     if exact_match:
         await loading.delete()
@@ -172,7 +166,6 @@ async def search(_, msg):
         asyncio.create_task(delete_message_later(m.chat.id, m.id))
         return
 
-    # Regex match suggestions
     suggestions = [
         m for m in all_movies
         if re.search(re.escape(raw_query), m.get("title", ""), re.IGNORECASE)
@@ -193,7 +186,6 @@ async def search(_, msg):
         asyncio.create_task(delete_message_later(m.chat.id, m.id))
         return
 
-    # Fuzzy match
     titles = [m["title"] for m in all_movies]
     fuzzy_result = process.extractOne(raw_query, titles)
     if fuzzy_result and fuzzy_result[1] > 75:
@@ -273,18 +265,14 @@ async def callback_handler(_, cq: CallbackQuery):
             action, uid, mid, raw_query = parts
             uid = int(uid)
             responses = {
-                "has": f"✅ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** মুভিটি ডাটাবেজে আছে। সঠিক নাম লিখে আবার চেষ্টা করুন।",
-                "no": f"❌ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** মুভিটি ডাটাবেজে নেই।",
-                "soon": f"⏳ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** মুভিটি শীঘ্রই আসবে।",
-                "wrong": f"✏️ @{cq.from_user.username or cq.from_user.first_name} বলছেন যে আপনি ভুল নাম লিখেছেন: **{raw_query}**।"
+                "has": f"✅ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** মুভি আছে।",
+                "no": f"❌ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** মুভি নেই।",
+                "soon": f"⏳ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** আসবে।",
+                "wrong": f"✏️ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** নাম ভুল।"
             }
             if action in responses:
-                m = await app.send_message(uid, responses[action])
-                asyncio.create_task(delete_message_later(m.chat.id, m.id))
-                await cq.answer("অ্যাডমিনের পক্ষ থেকে উত্তর পাঠানো হয়েছে।")
-            else:
-                await cq.answer()
+                await app.send_message(uid, responses[action])
+                await cq.answer("রিপোর্ট পাঠানো হয়েছে।")
+                await cq.message.delete()
 
-if __name__ == "__main__":
-    print("Bot is starting...")
-    app.run()
+app.run()
