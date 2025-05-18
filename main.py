@@ -13,7 +13,7 @@ from difflib import SequenceMatcher
 # Configs
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN"))
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 RESULTS_COUNT = int(os.getenv("RESULTS_COUNT", 10))
 ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(",")))
