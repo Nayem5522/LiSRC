@@ -3,4 +3,4 @@ pymongo==4.3.3
 flask==2.3.2
 fuzzywuzzy==0.18.0
 python-levenshtein==0.21.1
-imdbpy==2023.5.31
+imdbpy==6.8
