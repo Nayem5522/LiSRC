@@ -1,4 +1,6 @@
 pyrogram==2.0.106
 tgcrypto
-pymongo
-flask
+pymongo==4.6.1
+flask==3.0.3
+gunicorn==21.2.0
+rapidfuzz==3.6.2
