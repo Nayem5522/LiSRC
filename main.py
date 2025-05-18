@@ -46,7 +46,7 @@ Thread(target=lambda: flask_app.run(host="0.0.0.0", port=8080)).start()
 
 # Helpers
 def clean_text(text):
-    return re.sub(r'[^a-zA-Z0-9]', '', text.lower())
+    return re.sub(r'\s+', '', re.sub(r'[^a-zA-Z0-9 ]', '', text.lower()))
 
 def extract_year(text):
     match = re.search(r"(19|20)\d{2}", text)
@@ -162,8 +162,8 @@ async def search(_, msg):
 
     loading = await msg.reply("🔎 লোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
     all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
-
     exact_match = [m for m in all_movies if clean_text(m.get("title", "")) == query]
+
     if exact_match:
         await loading.delete()
         for m in exact_match[:RESULTS_COUNT]:
@@ -174,27 +174,25 @@ async def search(_, msg):
             )
             asyncio.create_task(delete_message_later(msg.chat.id, fwd.id))
             asyncio.create_task(delete_message_later(warning.chat.id, warning.id))
-            await asyncio.sleep(0.7)
+            await asyncio.sleep(0.5)
         return
 
-    # If no exact match, search for similar matches
-    partial_matches = sorted(
-        all_movies,
-        key=lambda x: get_similarity(query, clean_text(x.get("title", ""))),
-        reverse=True
-    )
+    partial_matches = [m for m in all_movies if query in clean_text(m.get("title", ""))]
+    results = [m for m in partial_matches if get_similarity(query, clean_text(m.get("title", ""))) > 0.25][:RESULTS_COUNT]
 
-    results = [m for m in partial_matches if get_similarity(query, clean_text(m.get("title", ""))) > 0.4][:RESULTS_COUNT]
     await loading.delete()
-
     if not results:
-        return await msg.reply("দুঃখিত, কিছু পাওয়া যায়নি। আবার চেষ্টা করুন।")
+        return await msg.reply("দুঃখিত, কিছুই পাওয়া যায়নি।")
 
-    buttons = []
     for m in results:
-        buttons.append([InlineKeyboardButton(m["title"][:50], callback_data=f"movie_{m['message_id']}")])
-
-    await msg.reply("এখান থেকে আপনার মুভি সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(buttons))
+        fwd = await app.forward_messages(msg.chat.id, CHANNEL_ID, m["message_id"])
+        warning = await msg.reply(
+            f"⚠️ এটি অস্থায়ী মেসেজ। **10 মিনিট** পরে ডিলিট হয়ে যাবে।",
+            reply_to_message_id=fwd.id
+        )
+        asyncio.create_task(delete_message_later(msg.chat.id, fwd.id))
+        asyncio.create_task(delete_message_later(warning.chat.id, warning.id))
+        await asyncio.sleep(0.5)
 
 @app.on_callback_query()
 async def callback_handler(_, cq: CallbackQuery):
