@@ -3,6 +3,7 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, 
 from pymongo import MongoClient, ASCENDING
 from flask import Flask
 from threading import Thread
+import threading
 import os
 import re
 from datetime import datetime
@@ -10,6 +11,7 @@ import asyncio
 import urllib.parse
 from fuzzywuzzy import fuzz
 from imdb import Cinemagoer
+from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 # ---------- Configs ----------
 API_ID = int(os.getenv("API_ID"))
@@ -37,12 +39,19 @@ movies_col.create_index([("title", ASCENDING)])
 movies_col.create_index("message_id")
 movies_col.create_index("language")
 
-# ---------- Flask ----------
+# ---------- Flask Server (Render hosting) ----------
 flask_app = Flask(__name__)
 @flask_app.route("/")
 def home():
     return "Bot is running!"
 Thread(target=lambda: flask_app.run(host="0.0.0.0", port=8080)).start()
+
+# ---------- Simple HTTP Server (Port 8000) ----------
+def start_web():
+    server = HTTPServer(("0.0.0.0", 8000), SimpleHTTPRequestHandler)
+    print("Web server running on port 8000")
+    server.serve_forever()
+threading.Thread(target=start_web, daemon=True).start()
 
 # ---------- Helpers ----------
 def clean_text(text):
