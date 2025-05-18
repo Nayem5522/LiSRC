@@ -1,7 +1,7 @@
-pyrogram==2.0.39
-pymongo==4.3.3
+pyrogram==2.0.107
+tgcrypto==1.4.3
+pymongo[srv]==4.3.3
 flask==2.3.2
 fuzzywuzzy==0.18.0
-python-levenshtein==0.21.1
-imdbpy==2022.7.9
-TgCrypto
+python-Levenshtein==0.21.1
+imdbpy==2023.4.4
