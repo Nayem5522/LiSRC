@@ -1,8 +1,4 @@
 pyrogram==2.0.106
-tgcrypto==1.2.5
-pymongo==4.3.3
-flask==2.3.2
-dnspython==2.3.0
-python-Levenshtein==0.21.1
-fuzzywuzzy==0.18.0
-Cinemagoer==2023.5.1
+tgcrypto
+pymongo
+flask
