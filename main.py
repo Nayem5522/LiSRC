@@ -7,7 +7,6 @@ import os
 import re
 from datetime import datetime
 import asyncio
-import urllib.parse
 from difflib import SequenceMatcher
 
 # Configs
@@ -28,25 +27,25 @@ mongo = MongoClient(DATABASE_URL)
 db = mongo["movie_bot"]
 movies_col = db["movies"]
 feedback_col = db["feedback"]
-stats_col = db["stats"]
 users_col = db["users"]
 settings_col = db["settings"]
 
-# Index
+# Index for faster search
 movies_col.create_index([("title", ASCENDING)])
 movies_col.create_index("message_id")
 movies_col.create_index("language")
 
-# Flask
+# Flask for uptime
 flask_app = Flask(__name__)
 @flask_app.route("/")
 def home():
     return "Bot is running!"
+
 Thread(target=lambda: flask_app.run(host="0.0.0.0", port=8080)).start()
 
 # Helpers
 def clean_text(text):
-    return re.sub(r'\s+', '', re.sub(r'[^a-zA-Z0-9 ]', '', text.lower()))
+    return re.sub(r'[^a-zA-Z0-9]', '', text.lower())
 
 def extract_year(text):
     match = re.search(r"(19|20)\d{2}", text)
@@ -66,17 +65,20 @@ async def delete_message_later(chat_id, message_id, delay=600):
     except:
         pass
 
+# Save posts from channel to DB
 @app.on_message(filters.chat(CHANNEL_ID))
 async def save_post(_, msg: Message):
     text = msg.text or msg.caption
     if not text:
         return
+
     movie = {
         "message_id": msg.id,
         "title": text,
         "date": msg.date,
         "year": extract_year(text),
-        "language": extract_language(text)
+        "language": extract_language(text),
+        "clean_title": clean_text(text)
     }
     movies_col.update_one({"message_id": msg.id}, {"$set": movie}, upsert=True)
 
@@ -91,6 +93,7 @@ async def save_post(_, msg: Message):
             except:
                 pass
 
+# Start command
 @app.on_message(filters.command("start"))
 async def start(_, msg: Message):
     users_col.update_one(
@@ -104,6 +107,7 @@ async def start(_, msg: Message):
     ])
     await msg.reply_photo(photo=START_PIC, caption="Send me a movie name to search.", reply_markup=btns)
 
+# Feedback command
 @app.on_message(filters.command("feedback") & filters.private)
 async def feedback(_, msg):
     if len(msg.command) < 2:
@@ -114,8 +118,9 @@ async def feedback(_, msg):
         "time": datetime.utcnow()
     })
     m = await msg.reply("Thanks for your feedback!")
-    asyncio.create_task(delete_message_later(m.chat.id, m.id))
+    asyncio.create_task(delete_message_later(m.chat.id, m.id, delay=60))
 
+# Broadcast command
 @app.on_message(filters.command("broadcast") & filters.user(ADMIN_IDS))
 async def broadcast(_, msg):
     if len(msg.command) < 2:
@@ -129,6 +134,7 @@ async def broadcast(_, msg):
             pass
     await msg.reply(f"Broadcast sent to {count} users.")
 
+# Stats command
 @app.on_message(filters.command("stats") & filters.user(ADMIN_IDS))
 async def stats(_, msg):
     await msg.reply(
@@ -137,6 +143,7 @@ async def stats(_, msg):
         f"Feedbacks: {feedback_col.count_documents({})}"
     )
 
+# Notify toggle command
 @app.on_message(filters.command("notify") & filters.user(ADMIN_IDS))
 async def notify_command(_, msg: Message):
     if len(msg.command) != 2 or msg.command[1] not in ["on", "off"]:
@@ -150,10 +157,12 @@ async def notify_command(_, msg: Message):
     status = "enabled" if new_value else "disabled"
     await msg.reply(f"✅ Global notifications {status}!")
 
-@app.on_message(filters.text)
+# Search command (main logic)
+@app.on_message(filters.text & ~filters.command)
 async def search(_, msg):
     raw_query = msg.text.strip()
     query = clean_text(raw_query)
+
     users_col.update_one(
         {"_id": msg.from_user.id},
         {"$set": {"last_search": datetime.utcnow()}},
@@ -161,39 +170,50 @@ async def search(_, msg):
     )
 
     loading = await msg.reply("🔎 লোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
-    all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
-    exact_match = [m for m in all_movies if clean_text(m.get("title", "")) == query]
 
-    if exact_match:
+    # Find movies with clean_title matching query (case-insensitive exact match)
+    exact_matches = list(movies_col.find({"clean_title": query}))
+
+    if exact_matches:
         await loading.delete()
-        for m in exact_match[:RESULTS_COUNT]:
-            fwd = await app.forward_messages(msg.chat.id, CHANNEL_ID, m["message_id"])
+        for movie in exact_matches[:RESULTS_COUNT]:
+            fwd = await app.forward_messages(msg.chat.id, CHANNEL_ID, movie["message_id"])
             warning = await msg.reply(
-                f"⚠️ এটি অস্থায়ী মেসেজ। **10 মিনিট** পরে ডিলিট হয়ে যাবে।",
+                f"⚠️ এটি অস্থায়ী মেসেজ। **১০ মিনিট** পরে ডিলিট হয়ে যাবে।",
                 reply_to_message_id=fwd.id
             )
             asyncio.create_task(delete_message_later(msg.chat.id, fwd.id))
             asyncio.create_task(delete_message_later(warning.chat.id, warning.id))
-            await asyncio.sleep(0.5)
+            # Sleep removed for speed optimization
         return
 
-    partial_matches = [m for m in all_movies if query in clean_text(m.get("title", ""))]
-    results = [m for m in partial_matches if get_similarity(query, clean_text(m.get("title", ""))) > 0.25][:RESULTS_COUNT]
+    # If no exact match, do fuzzy search on titles with similarity > 0.7
+    all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1}))
+    fuzzy_matches = []
+    for m in all_movies:
+        title = m.get("title", "")
+        sim = get_similarity(raw_query, title)
+        if sim > 0.7:
+            fuzzy_matches.append((sim, m))
 
-    await loading.delete()
-    if not results:
-        return await msg.reply("দুঃখিত, কিছুই পাওয়া যায়নি।")
+    fuzzy_matches.sort(key=lambda x: x[0], reverse=True)
 
-    for m in results:
-        fwd = await app.forward_messages(msg.chat.id, CHANNEL_ID, m["message_id"])
-        warning = await msg.reply(
-            f"⚠️ এটি অস্থায়ী মেসেজ। **10 মিনিট** পরে ডিলিট হয়ে যাবে।",
-            reply_to_message_id=fwd.id
-        )
-        asyncio.create_task(delete_message_later(msg.chat.id, fwd.id))
-        asyncio.create_task(delete_message_later(warning.chat.id, warning.id))
-        await asyncio.sleep(0.5)
+    if fuzzy_matches:
+        await loading.delete()
+        for _, movie in fuzzy_matches[:RESULTS_COUNT]:
+            fwd = await app.forward_messages(msg.chat.id, CHANNEL_ID, movie["message_id"])
+            warning = await msg.reply(
+                f"⚠️ এটি অস্থায়ী মেসেজ। **১০ মিনিট** পরে ডিলিট হয়ে যাবে।",
+                reply_to_message_id=fwd.id
+            )
+            asyncio.create_task(delete_message_later(msg.chat.id, fwd.id))
+            asyncio.create_task(delete_message_later(warning.chat.id, warning.id))
+            # Sleep removed for speed optimization
+        return
 
+    await loading.edit("কিছু পাওয়া যায়নি। অনুগ্রহ করে আবার চেষ্টা করুন।")
+
+# Callback query handler (if needed)
 @app.on_callback_query()
 async def callback_handler(_, cq: CallbackQuery):
     data = cq.data
@@ -202,7 +222,7 @@ async def callback_handler(_, cq: CallbackQuery):
         mid = int(data.split("_")[1])
         fwd = await app.forward_messages(cq.message.chat.id, CHANNEL_ID, mid)
         warning = await cq.message.reply(
-            f"⚠️ এটি অস্থায়ী মেসেজ। **10 মিনিট** পরে ডিলিট হয়ে যাবে।",
+            f"⚠️ এটি অস্থায়ী মেসেজ। **১০ মিনিট** পরে ডিলিট হয়ে যাবে।",
             reply_to_message_id=fwd.id
         )
         asyncio.create_task(delete_message_later(cq.message.chat.id, fwd.id))
