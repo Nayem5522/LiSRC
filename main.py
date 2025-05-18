@@ -33,7 +33,7 @@ START_PIC = os.getenv(
 )
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
-# Safely parse ADMIN_IDS (ignore empty or non-numeric entries)
+# Safely parse ADMIN_IDS
 admin_ids_env = os.getenv("ADMIN_IDS", "")
 ADMIN_IDS = [int(x) for x in admin_ids_env.split(",") if x.isdigit()]
 
@@ -205,7 +205,10 @@ async def notify_command(_, msg: Message):
     status = "enabled" if new_value else "disabled"
     await msg.reply(f"✅ Global notifications {status}!")
 
-@bot.on_message(filters.text & ~filters.private & ~filters.command)
+# -------------------
+# Search Handler
+# -------------------
+@bot.on_message(filters.text & ~filters.regex(r"^/"))
 async def search(_, msg: Message):
     raw_query = msg.text.strip()
     query = clean_text(raw_query)
@@ -223,7 +226,7 @@ async def search(_, msg: Message):
     if exact:
         await loading.delete()
         buttons = [
-            [InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")]
+            [InlineKeyboardButton(m["title"][[:40]], callback_data=f"movie_{m['message_id']}")]
             for m in exact[:RESULTS_COUNT]
         ]
         res = await msg.reply("নিচের ফলাফল থেকে বেছে নিন:", reply_markup=InlineKeyboardMarkup(buttons))
@@ -233,7 +236,7 @@ async def search(_, msg: Message):
     # Substring suggestions
     suggested = [
         m for m in all_movies
-        if re.search(re.escape(raw_query), m["title"], re.IGNORECASE)
+        if re.search(re.escape(raw_query), m['title'], re.IGNORECASE)
     ]
     if suggested:
         await loading.delete()
@@ -242,7 +245,7 @@ async def search(_, msg: Message):
             for lang in ("Bengali", "Hindi", "English")
         ]
         buttons = [
-            [InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")]
+            [InlineKeyboardButton(m["title"][[:40]], callback_data=f"movie_{m['message_id']}")]
             for m in suggested[:RESULTS_COUNT]
         ]
         buttons.append(lang_row)
@@ -254,15 +257,15 @@ async def search(_, msg: Message):
         return
 
     # Fuzzy match
-    titles = [m["title"] for m in all_movies]
+    titles = [m['title'] for m in all_movies]
     fuzzy = process.extractOne(raw_query, titles)
     if fuzzy and fuzzy[1] > 75:
-        match_title = fuzzy[0]
-        fuzzy_matches = [m for m in all_movies if m["title"] == match_title]
+        matched = fuzzy[0]
+        fuzzy_matches = [m for m in all_movies if m['title'] == matched]
         if fuzzy_matches:
             await loading.delete()
             buttons = [
-                [InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")]
+                [InlineKeyboardButton(m["title"][[:40]], callback_data=f"movie_{m['message_id']}")]
                 for m in fuzzy_matches[:RESULTS_COUNT]
             ]
             res = await msg.reply("ফাজি ম্যাচ পাওয়া গেছে:", reply_markup=InlineKeyboardMarkup(buttons))
@@ -278,7 +281,6 @@ async def search(_, msg: Message):
     )
     asyncio.create_task(delete_message_later(alert.chat.id, alert.id))
 
-    # Notify admins
     feedback_buttons = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✅ মুভি আছে", callback_data=f"has_{msg.chat.id}_{msg.id}_{raw_query}"),
@@ -292,7 +294,7 @@ async def search(_, msg: Message):
     for admin in ADMIN_IDS:
         await bot.send_message(
             admin,
-            f"❗ ইউজার `{msg.from_user.id}` `{msg.from_user.first_name}` খুঁজেছে: **{raw_query}**\nফলাফল পাওয়া যায়নি। নিচে বাটন থেকে উত্তর দিন।",
+            f"❗ ইউজার `{msg.from_user.id}` `{msg.from_user.first_name}` খুঁজেছে: **{raw_query}**\nফলাফল পাওয়া যায়নি। নিচে বাটন থেকে উত্তর দিন.",
             reply_markup=feedback_buttons
         )
 
@@ -315,7 +317,7 @@ async def callback_handler(_, cq: CallbackQuery):
         ]
         if matches:
             buttons = [
-                [InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")]
+                [InlineKeyboardButton(m["title"][[:40]], callback_data=f"movie_{m['message_id']}")]
                 for m in matches[:RESULTS_COUNT]
             ]
             await cq.message.edit_text(
@@ -326,17 +328,16 @@ async def callback_handler(_, cq: CallbackQuery):
             await cq.answer("এই ভাষায় কিছু পাওয়া যায়নি।", show_alert=True)
         return
 
-    # Admin feedback callbacks
     parts = data.split("_", 3)
     if len(parts) == 4:
         action, uid, mid, raw_query = parts
         uid = int(uid)
         user_tag = cq.from_user.username or cq.from_user.first_name
         resp_map = {
-            "has": f"✅ @{user_tag} জানিয়েছেন যে **{raw_query}** মুভি আছে।",
-            "no":   f"❌ @{user_tag} জানিয়েছেন যে **{raw_query}** মুভি নেই।",
-            "soon": f"⏳ @{user_tag} জানিয়েছেন যে **{raw_query}** আসবে।",
-            "wrong":f"✏️ @{user_tag} জানিয়েছেন যে **{raw_query}** নাম ভুল।",
+            "has":   f"✅ @{user_tag} জানিয়েছেন যে **{raw_query}** মুভি আছে।",
+            "no":    f"❌ @{user_tag} জানিয়েছেন যে **{raw_query}** মুভি নেই।",
+            "soon":  f"⏳ @{user_tag} জানিয়েছেন যে **{raw_query}** আসবে।",
+            "wrong": f"✏️ @{user_tag} জানিয়েছেন যে **{raw_query}** নাম ভুল।",
         }
         if action in resp_map:
             await bot.send_message(uid, resp_map[action])
