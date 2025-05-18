@@ -1,6 +1,7 @@
 pyrogram==2.0.106
-tgcrypto
+tgcrypto==1.2.5
 pymongo==4.6.1
-flask==3.0.3
-gunicorn==21.2.0
-rapidfuzz==3.6.2
+Flask==3.0.2
+python-dotenv==1.0.1
+fuzzywuzzy==0.18.0
+python-Levenshtein==0.25.1
