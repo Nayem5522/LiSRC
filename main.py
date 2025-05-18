@@ -275,4 +275,6 @@ async def callback_handler(_, cq: CallbackQuery):
                 await cq.answer("রিপোর্ট পাঠানো হয়েছে।")
                 await cq.message.delete()
 
-app.run()
+if __name__ == "__main__":
+    print("Bot is starting...")
+    app.run()
