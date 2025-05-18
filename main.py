@@ -162,6 +162,7 @@ async def search(_, msg):
 
     loading = await msg.reply("🔎 লোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
     all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
+
     exact_match = [m for m in all_movies if clean_text(m.get("title", "")) == query]
     if exact_match:
         await loading.delete()
@@ -176,8 +177,24 @@ async def search(_, msg):
             await asyncio.sleep(0.7)
         return
 
-    # Continue as previous...
-    # (For brevity, the rest of the unchanged search function is omitted)
+    # If no exact match, search for similar matches
+    partial_matches = sorted(
+        all_movies,
+        key=lambda x: get_similarity(query, clean_text(x.get("title", ""))),
+        reverse=True
+    )
+
+    results = [m for m in partial_matches if get_similarity(query, clean_text(m.get("title", ""))) > 0.4][:RESULTS_COUNT]
+    await loading.delete()
+
+    if not results:
+        return await msg.reply("দুঃখিত, কিছু পাওয়া যায়নি। আবার চেষ্টা করুন।")
+
+    buttons = []
+    for m in results:
+        buttons.append([InlineKeyboardButton(m["title"][:50], callback_data=f"movie_{m['message_id']}")])
+
+    await msg.reply("এখান থেকে আপনার মুভি সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(buttons))
 
 @app.on_callback_query()
 async def callback_handler(_, cq: CallbackQuery):
@@ -193,8 +210,6 @@ async def callback_handler(_, cq: CallbackQuery):
         asyncio.create_task(delete_message_later(cq.message.chat.id, fwd.id))
         asyncio.create_task(delete_message_later(warning.chat.id, warning.id))
         await cq.answer("মুভি পাঠানো হয়েছে।")
-
-    # Continue other callback logic as before...
 
 if __name__ == "__main__":
     print("Bot is starting...")
