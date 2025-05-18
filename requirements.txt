@@ -3,4 +3,5 @@ pymongo==4.3.3
 flask==2.3.2
 fuzzywuzzy==0.18.0
 python-levenshtein==0.21.1
-imdbpy==6.8
+imdbpy==2022.7.9
+TgCrypto
