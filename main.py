@@ -9,6 +9,7 @@ import difflib
 from datetime import datetime
 import asyncio
 import urllib.parse
+from rapidfuzz import process, fuzz  # <-- নতুন লাইব্রেরি
 
 # Configs
 API_ID = int(os.getenv("API_ID"))
@@ -150,6 +151,9 @@ async def notify_command(_, msg: Message):
 @app.on_message(filters.text)
 async def search(_, msg):
     raw_query = msg.text.strip()
+    if len(raw_query) < 3:
+        return await msg.reply("অনুগ্রহ করে আরও নির্দিষ্ট একটি নাম লিখুন (কমপক্ষে ৩ অক্ষর)।")
+
     query = clean_text(raw_query)
     users_col.update_one(
         {"_id": msg.from_user.id},
@@ -159,17 +163,10 @@ async def search(_, msg):
 
     loading = await msg.reply("🔎 লোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
     all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
-    exact_match = [m for m in all_movies if clean_text(m.get("title", "")) == query]
-    if exact_match:
-        await loading.delete()
-        for m in exact_match[:RESULTS_COUNT]:
-            fwd = await app.forward_messages(msg.chat.id, CHANNEL_ID, m["message_id"])
-            asyncio.create_task(delete_message_later(msg.chat.id, fwd.id))
-            await asyncio.sleep(0.1)
-        return
 
     movie_titles = [m["title"] for m in all_movies]
-    matched_titles = difflib.get_close_matches(raw_query, movie_titles, n=RESULTS_COUNT, cutoff=0.4)
+    matched = process.extract(raw_query, movie_titles, scorer=fuzz.partial_ratio, limit=RESULTS_COUNT)
+    matched_titles = [match[0] for match in matched if match[1] >= 50]
     suggestions = [m for m in all_movies if m["title"] in matched_titles]
 
     if suggestions:
