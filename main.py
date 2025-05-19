@@ -21,6 +21,7 @@ app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 movie_cache = []
 
+# Flask server for Koyeb/Render
 flask_app = Flask(__name__)
 @flask_app.route('/')
 def home():
@@ -30,8 +31,9 @@ Thread(target=lambda: flask_app.run(host="0.0.0.0", port=8080)).start()
 def clean(text):
     return re.sub(r'[^a-zA-Z0-9]', '', text.lower())
 
+# Optional: Detect language if needed in future
 def detect_language(text):
-    if re.search(r'[\u0980-\u09FF]', text):  # Bengali Unicode range
+    if re.search(r'[\u0980-\u09FF]', text):
         return "bn"
     return "en"
 
@@ -43,7 +45,7 @@ async def cache_movie(_, msg: Message):
     movie_cache.append({
         "title": title,
         "clean": clean(title),
-        "message_id": msg.id,
+        "message_id": msg.message_id,
         "lang": detect_language(title)
     })
 
@@ -53,7 +55,7 @@ async def start(_, msg: Message):
         [InlineKeyboardButton("Update Channel", url=UPDATE_CHANNEL)],
         [InlineKeyboardButton("Contact Admin", url="https://t.me/ctgmovies23")]
     ])
-    movie_cache.append({"chat_id": msg.chat.id})  # Track user
+    movie_cache.append({"chat_id": msg.chat.id})
     if START_PIC:
         await msg.reply_photo(photo=START_PIC, caption="Send me a movie name to search.", reply_markup=btn)
     else:
@@ -62,8 +64,8 @@ async def start(_, msg: Message):
 @app.on_message(filters.text & filters.private)
 async def search(_, msg: Message):
     query = clean(msg.text.strip())
-    loading = await msg.reply("\ud83d\udd0e Searching, please wait...")
-    movie_cache.append({"chat_id": msg.chat.id})  # Track user
+    loading = await msg.reply("🔎 Searching, please wait...")
+    movie_cache.append({"chat_id": msg.chat.id})
 
     matched = [m for m in movie_cache if query in m.get("clean", "")]
 
@@ -98,15 +100,15 @@ async def cb_handler(_, cq: CallbackQuery):
 @app.on_message(filters.command("stats") & filters.private)
 async def stats(_, msg: Message):
     if msg.from_user.id not in ADMIN_IDS:
-        return await msg.reply("\u274c You are not authorized.")
+        return await msg.reply("❌ You are not authorized.")
     total_movies = len([m for m in movie_cache if "title" in m])
     total_users = len(set(m["chat_id"] for m in movie_cache if "chat_id" in m))
-    await msg.reply(f"\ud83d\udcca Stats:\n\u2022 Total Movies: {total_movies}\n\u2022 Unique Users: {total_users}")
+    await msg.reply(f"📊 Stats:\n• Total Movies: {total_movies}\n• Unique Users: {total_users}")
 
 @app.on_message(filters.command("broadcast") & filters.private)
 async def broadcast(_, msg: Message):
     if msg.from_user.id not in ADMIN_IDS:
-        return await msg.reply("\u274c You are not authorized.")
+        return await msg.reply("❌ You are not authorized.")
     if not msg.reply_to_message:
         return await msg.reply("Reply to a message to broadcast it.")
 
@@ -118,7 +120,7 @@ async def broadcast(_, msg: Message):
             success += 1
         except:
             fail += 1
-    await msg.reply(f"\u2705 Broadcast complete.\nSuccess: {success}, Failed: {fail}")
+    await msg.reply(f"✅ Broadcast complete.\nSuccess: {success}, Failed: {fail}")
 
 if __name__ == "__main__":
     print("Bot is running...")
