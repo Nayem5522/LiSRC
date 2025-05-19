@@ -8,6 +8,7 @@ import re
 from datetime import datetime
 import asyncio
 import urllib.parse
+from difflib import SequenceMatcher
 
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
@@ -159,24 +160,17 @@ async def search(_, msg):
         upsert=True
     )
 
-    loading = await msg.reply("🔎 লোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
+    loading = await msg.reply("\ud83d\udd0e \u09b2\u09cb\u09a1 \u09b9\u099a\u09cd\u099b\u09c7, \u0985\u09a8\u09c1\u0997\u09cd\u09b0\u09b9 \u0995\u09b0\u09c7 \u0985\u09aa\u09c7\u0995\u09cd\u09b7\u09be \u0995\u09b0\u09c1\u09a8...")
     all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
 
-    exact_match = [m for m in all_movies if clean_text(refine_query(m.get("title", ""))) == query]
+    def is_similar(title):
+        refined_title = clean_text(refine_query(title))
+        ratio = SequenceMatcher(None, query, refined_title).ratio()
+        return ratio >= 0.5
 
-    if exact_match:
-        await loading.delete()
-        for m in exact_match[:RESULTS_COUNT]:
-            fwd = await app.forward_messages(msg.chat.id, CHANNEL_ID, m["message_id"])
-            asyncio.create_task(delete_message_later(msg.chat.id, fwd.id))
-            await asyncio.sleep(0.1)
-        return
+    matches = [m for m in all_movies if is_similar(m.get("title", ""))]
 
-    suggestions = [
-        m for m in all_movies
-        if re.search(re.escape(refined), refine_query(m.get("title", "")), re.IGNORECASE)
-    ]
-    if suggestions:
+    if matches:
         await loading.delete()
         lang_buttons = [
             InlineKeyboardButton("Bengali", callback_data=f"lang_Bengali_{query}"),
@@ -185,10 +179,10 @@ async def search(_, msg):
         ]
         buttons = [
             [InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")]
-            for m in suggestions[:RESULTS_COUNT]
+            for m in matches[:RESULTS_COUNT]
         ]
         buttons.append(lang_buttons)
-        m = await msg.reply("আপনার মুভির নাম মিলতে পারে, নিচের থেকে সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(buttons))
+        m = await msg.reply("\u0986\u09aa\u09a8\u09be\u09b0 \u09ae\u09c1\u09ad\u09bf\u09b0 \u09a8\u09be\u09ae \u09ae\u09bf\u09b2\u09a4\u09c7 \u09aa\u09be\u09b0\u09c7, \u09a8\u09bf\u099a\u09c7\u09b0 \u09a5\u09c7\u0995\u09c7 \u09b8\u09bf\u09b2\u09c7\u0995\u09cd\u099f \u0995\u09b0\u09c1\u09a8:", reply_markup=InlineKeyboardMarkup(buttons))
         asyncio.create_task(delete_message_later(m.chat.id, m.id))
         return
 
@@ -198,25 +192,25 @@ async def search(_, msg):
         [InlineKeyboardButton("Search on Google", url=google_search_url)]
     ])
     alert = await msg.reply(
-        "কোনও ফলাফল পাওয়া যায়নি। অ্যাডমিনকে জানানো হয়েছে। নিচের বাটনে ক্লিক করে গুগলে সার্চ করুন।",
+        "\u0995\u09cb\u09a8\u09cb \u09ab\u09b2\u09be\u09ab\u09b2 \u09aa\u09be\u0993\u09df\u09be \u0997\u09df\u09c7\u09a8\u09bf \u09a8\u09be। \u0985\u09cd\u09af\u09be\u09a1\u09ae\u09bf\u09a8\u0995\u09c7 \u099c\u09be\u09a8\u09be\u09a8\u09cb \u09b9\u09df\u09c7\u099b\u09c7। \u09a8\u09bf\u099a\u09c7\u09b0 \u09ac\u09be\u099f\u09a8\u09c7 \u0995\u09cd\u09b2\u09bf\u0995 \u0995\u09b0\u09c7 \u0997\u09c1\u0997\u09b2\u09c7 \u09b8\u09be\u09b0\u09cd\u099a \u0995\u09b0\u09c1\u09a8।",
         reply_markup=google_button
     )
     asyncio.create_task(delete_message_later(alert.chat.id, alert.id))
 
     btn = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("✅ মুভি আছে", callback_data=f"has_{msg.chat.id}_{msg.id}_{raw_query}"),
-            InlineKeyboardButton("❌ নেই", callback_data=f"no_{msg.chat.id}_{msg.id}_{raw_query}")
+            InlineKeyboardButton("\u2705 \u09ae\u09c1\u09ad\u09bf \u0986\u099b\u09c7", callback_data=f"has_{msg.chat.id}_{msg.id}_{raw_query}"),
+            InlineKeyboardButton("\u274c \u09a8\u09c7\u0987", callback_data=f"no_{msg.chat.id}_{msg.id}_{raw_query}")
         ],
         [
-            InlineKeyboardButton("⏳ আসবে", callback_data=f"soon_{msg.chat.id}_{msg.id}_{raw_query}"),
-            InlineKeyboardButton("✏️ ভুল নাম", callback_data=f"wrong_{msg.chat.id}_{msg.id}_{raw_query}")
+            InlineKeyboardButton("\u23f3 \u0986\u09b8\u09ac\u09c7", callback_data=f"soon_{msg.chat.id}_{msg.id}_{raw_query}"),
+            InlineKeyboardButton("\u270f\ufe0f \u09ad\u09c1\u09b2 \u09a8\u09be\u09ae", callback_data=f"wrong_{msg.chat.id}_{msg.id}_{raw_query}")
         ]
     ])
     for admin_id in ADMIN_IDS:
         await app.send_message(
             admin_id,
-            f"❗ ইউজার `{msg.from_user.id}` `{msg.from_user.first_name}` খুঁজেছে: **{raw_query}**\nফলাফল পাওয়া যায়নি। নিচে বাটন থেকে উত্তর দিন।",
+            f"\u2757 \u0987\u0989\u099c\u09be\u09b0 `{msg.from_user.id}` `{msg.from_user.first_name}` \u0996\u09c1\u099c\u09c7\u099b\u09c7: **{raw_query}**\n\u09ab\u09b2\u09be\u09ab\u09b2 \u09aa\u09be\u0993\u09df\u09be \u0997\u09df\u09c7\u09a8\u09bf \u09a8\u09be। \u09a8\u09bf\u099a\u09c7 \u09ac\u09be\u099f\u09a8 \u09a5\u09c7\u0995\u09c7 \u0989\u09a4\u09cd\u09a4\u09b0 \u09a6\u09bf\u09a8।",
             reply_markup=btn
         )
 
