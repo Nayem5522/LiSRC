@@ -8,7 +8,9 @@ import re
 from datetime import datetime
 import asyncio
 import urllib.parse
+from rapidfuzz import fuzz  # Added for fuzzy matching
 
+# Configs
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -21,6 +23,7 @@ START_PIC = os.getenv("START_PIC", "https://i.ibb.co/prnGXMr3/photo-2025-05-16-0
 
 app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
+# MongoDB setup
 mongo = MongoClient(DATABASE_URL)
 db = mongo["movie_bot"]
 movies_col = db["movies"]
@@ -29,24 +32,21 @@ stats_col = db["stats"]
 users_col = db["users"]
 settings_col = db["settings"]
 
+# Index
 movies_col.create_index([("title", ASCENDING)])
 movies_col.create_index("message_id")
 movies_col.create_index("language")
 
+# Flask
 flask_app = Flask(__name__)
 @flask_app.route("/")
 def home():
     return "Bot is running!"
 Thread(target=lambda: flask_app.run(host="0.0.0.0", port=8080)).start()
 
+# Helpers
 def clean_text(text):
     return re.sub(r'[^a-zA-Z0-9]', '', text.lower())
-
-def refine_query(raw_text):
-    stop_words = ["full", "hd", "movie", "hindi", "english", "bengali", "720p", "1080p"]
-    words = raw_text.lower().split()
-    refined = [w for w in words if w not in stop_words]
-    return " ".join(refined)
 
 def extract_year(text):
     match = re.search(r"(19|20)\d{2}", text)
@@ -55,6 +55,12 @@ def extract_year(text):
 def extract_language(text):
     langs = ["Bengali", "Hindi", "English"]
     return next((lang for lang in langs if lang.lower() in text.lower()), "Unknown")
+
+def get_best_matches(query, all_movies, threshold=75):
+    return [
+        m for m in all_movies
+        if fuzz.ratio(query, clean_text(m.get("title", ""))) >= threshold
+    ]
 
 async def delete_message_later(chat_id, message_id, delay=600):
     await asyncio.sleep(delay)
@@ -150,9 +156,7 @@ async def notify_command(_, msg: Message):
 @app.on_message(filters.text)
 async def search(_, msg):
     raw_query = msg.text.strip()
-    refined = refine_query(raw_query)
-    query = clean_text(refined)
-
+    query = clean_text(raw_query)
     users_col.update_one(
         {"_id": msg.from_user.id},
         {"$set": {"last_search": datetime.utcnow()}},
@@ -162,8 +166,7 @@ async def search(_, msg):
     loading = await msg.reply("🔎 লোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
     all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
 
-    exact_match = [m for m in all_movies if clean_text(refine_query(m.get("title", ""))) == query]
-
+    exact_match = [m for m in all_movies if clean_text(m.get("title", "")) == query]
     if exact_match:
         await loading.delete()
         for m in exact_match[:RESULTS_COUNT]:
@@ -172,23 +175,14 @@ async def search(_, msg):
             await asyncio.sleep(0.1)
         return
 
-    suggestions = [
-        m for m in all_movies
-        if re.search(re.escape(refined), refine_query(m.get("title", "")), re.IGNORECASE)
-    ]
-    if suggestions:
+    fuzzy_matches = get_best_matches(query, all_movies)
+    if fuzzy_matches:
         await loading.delete()
-        lang_buttons = [
-            InlineKeyboardButton("Bengali", callback_data=f"lang_Bengali_{query}"),
-            InlineKeyboardButton("Hindi", callback_data=f"lang_Hindi_{query}"),
-            InlineKeyboardButton("English", callback_data=f"lang_English_{query}")
-        ]
         buttons = [
             [InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")]
-            for m in suggestions[:RESULTS_COUNT]
+            for m in fuzzy_matches[:RESULTS_COUNT]
         ]
-        buttons.append(lang_buttons)
-        m = await msg.reply("আপনার মুভির নাম মিলতে পারে, নিচের থেকে সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(buttons))
+        m = await msg.reply("আপনার মুভির সাথে মিলে যেতে পারে:", reply_markup=InlineKeyboardMarkup(buttons))
         asyncio.create_task(delete_message_later(m.chat.id, m.id))
         return
 
@@ -235,7 +229,7 @@ async def callback_handler(_, cq: CallbackQuery):
         lang_movies = list(movies_col.find({"language": lang}))
         matches = [
             m for m in lang_movies
-            if re.search(re.escape(query), clean_text(refine_query(m.get("title", ""))), re.IGNORECASE)
+            if re.search(re.escape(query), m.get("title", ""), re.IGNORECASE)
         ]
         if matches:
             buttons = [
