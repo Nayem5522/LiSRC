@@ -19,6 +19,7 @@ START_PIC = "https://i.ibb.co/prnGXMr3/photo-2025-05-16-05-15-45-750490842862452
 
 app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
+# Simple file-based DB
 MOVIE_DB = "movies.json"
 USER_DB = "users.json"
 
@@ -28,17 +29,14 @@ def save_data(file, data): json.dump(data, open(file, "w"))
 movie_cache = load_data(MOVIE_DB)
 user_cache = set(load_data(USER_DB))
 
-# Flask Web Server (for uptime on Render/Koyeb)
 flask_app = Flask(__name__)
 @flask_app.route('/')
 def home(): return "Bot is Running"
 Thread(target=lambda: flask_app.run(host="0.0.0.0", port=8080)).start()
 
-# Helper Functions
 def clean(text): return re.sub(r'[^a-zA-Z0-9]', '', text.lower())
 def detect_language(text): return "bn" if re.search(r'[\u0980-\u09FF]', text) else "en"
 
-# Movie Caching from Channel
 @app.on_message(filters.chat(CHANNEL_ID))
 async def cache_movie(_, msg: Message):
     title = msg.caption or msg.text
@@ -51,12 +49,10 @@ async def cache_movie(_, msg: Message):
     })
     save_data(MOVIE_DB, movie_cache)
 
-# Start Command
 @app.on_message(filters.command("start") & filters.private)
 async def start(_, msg: Message):
     user_cache.add(msg.chat.id)
     save_data(USER_DB, list(user_cache))
-
     btn = InlineKeyboardMarkup([
         [InlineKeyboardButton("Update Channel", url=UPDATE_CHANNEL)],
         [InlineKeyboardButton("Contact Admin", url="https://t.me/ctgmovies23")]
@@ -66,7 +62,6 @@ async def start(_, msg: Message):
     else:
         await msg.reply("Send me a movie name to search.", reply_markup=btn)
 
-# Search Handler
 @app.on_message(filters.text & filters.private)
 async def search(_, msg: Message):
     query = clean(msg.text.strip())
@@ -78,6 +73,17 @@ async def search(_, msg: Message):
     matched = [m for m in movie_cache if query in m.get("clean", "") and m.get("lang") == lang]
 
     if not matched:
+        await loading.edit(
+            "❌ Sorry, no movie found with that name.\n\n"
+            "ℹ️ The admin has been notified and will update soon."
+        )
+        for admin_id in ADMIN_IDS:
+            try:
+                await app.send_message(
+                    admin_id,
+                    f"❗ User `{msg.from_user.first_name}` (`{msg.from_user.id}`) searched for:\n`{msg.text}`\nBut nothing was found."
+                )
+            except: pass
         await asyncio.sleep(DELETE_DELAY)
         await msg.delete()
         await loading.delete()
@@ -89,7 +95,6 @@ async def search(_, msg: Message):
     await msg.delete()
     await result.delete()
 
-# Forward Selected Movie
 @app.on_callback_query()
 async def cb_handler(_, cq: CallbackQuery):
     if cq.data.startswith("movie_"):
@@ -102,14 +107,12 @@ async def cb_handler(_, cq: CallbackQuery):
         except:
             await cq.answer("Failed to forward. Might be deleted.", show_alert=True)
 
-# Stats Command
 @app.on_message(filters.command("stats") & filters.private)
 async def stats(_, msg: Message):
     if msg.from_user.id not in ADMIN_IDS:
         return await msg.reply("❌ You are not authorized.")
     await msg.reply(f"📊 Stats:\n• Total Movies: {len(movie_cache)}\n• Unique Users: {len(user_cache)}")
 
-# Broadcast Command
 @app.on_message(filters.command("broadcast") & filters.private)
 async def broadcast(_, msg: Message):
     if msg.from_user.id not in ADMIN_IDS:
