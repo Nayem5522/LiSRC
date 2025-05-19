@@ -13,23 +13,28 @@ CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 RESULTS_COUNT = int(os.getenv("RESULTS_COUNT", 10))
 ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(","))) if os.getenv("ADMIN_IDS") else []
 UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL", "https://t.me/CTGMovieOfficial")
-START_PIC = os.getenv("START_PIC"https://i.ibb.co/prnGXMr3/photo-2025-05-16-05-15-45-7504908428624527364.jpg"
 
+# ✅ ছবির লিংক এখানে সরাসরি বসানো হয়েছে
+START_PIC = "https://i.ibb.co/prnGXMr3/photo-2025-05-16-05-15-45-7504908428624527364.jpg"
+
+# Pyrogram client setup
 app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
+# Movie cache memory
 movie_cache = []
 
-# Flask web server for Render/Koyeb uptime
+# Flask server for Koyeb/Render
 flask_app = Flask(__name__)
 @flask_app.route('/')
 def home():
     return "Bot is Running"
-
 Thread(target=lambda: flask_app.run(host="0.0.0.0", port=8080)).start()
 
+# Clean movie names for better search
 def clean(text):
     return re.sub(r'[^a-zA-Z0-9]', '', text.lower())
 
+# Cache movies from the channel
 @app.on_message(filters.chat(CHANNEL_ID))
 async def cache_movie(_, msg: Message):
     title = msg.caption or msg.text
@@ -41,6 +46,7 @@ async def cache_movie(_, msg: Message):
         "message_id": msg.id
     })
 
+# /start command handler
 @app.on_message(filters.command("start"))
 async def start(_, msg: Message):
     btn = InlineKeyboardMarkup([
@@ -52,6 +58,7 @@ async def start(_, msg: Message):
     else:
         await msg.reply("Send me a movie name to search.", reply_markup=btn)
 
+# Search handler
 @app.on_message(filters.text & filters.private)
 async def search(_, msg: Message):
     query = clean(msg.text.strip())
@@ -68,6 +75,7 @@ async def search(_, msg: Message):
     ]
     await loading.edit("Found results. Select one:", reply_markup=InlineKeyboardMarkup(buttons))
 
+# Callback query handler for movie forwarding
 @app.on_callback_query()
 async def cb_handler(_, cq: CallbackQuery):
     if cq.data.startswith("movie_"):
@@ -78,6 +86,7 @@ async def cb_handler(_, cq: CallbackQuery):
         except:
             await cq.answer("Failed to forward. Might be deleted.", show_alert=True)
 
+# Bot run
 if __name__ == "__main__":
     print("Bot is running...")
     app.run()
