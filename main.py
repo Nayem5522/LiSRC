@@ -9,7 +9,7 @@ import difflib
 from datetime import datetime
 import asyncio
 import urllib.parse
-from rapidfuzz import process, fuzz  # <-- নতুন লাইব্রেরি
+from rapidfuzz import process, fuzz  # নতুন লাইব্রেরি
 
 # Configs
 API_ID = int(os.getenv("API_ID"))
@@ -17,11 +17,12 @@ API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 RESULTS_COUNT = int(os.getenv("RESULTS_COUNT", 10))
-ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(",")))
+ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(","))) if os.getenv("ADMIN_IDS") else []
 DATABASE_URL = os.getenv("DATABASE_URL")
 UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL", "https://t.me/CTGMovieOfficial")
 START_PIC = os.getenv("START_PIC", "https://i.ibb.co/prnGXMr3/photo-2025-05-16-05-15-45-7504908428624527364.jpg")
 
+# Pyrogram Client
 app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # MongoDB setup
@@ -33,19 +34,21 @@ stats_col = db["stats"]
 users_col = db["users"]
 settings_col = db["settings"]
 
-# Index
+# Indexes for optimization
 movies_col.create_index([("title", ASCENDING)])
 movies_col.create_index("message_id")
 movies_col.create_index("language")
 
-# Flask
+# Flask app for health check
 flask_app = Flask(__name__)
+
 @flask_app.route("/")
 def home():
     return "Bot is running!"
+
 Thread(target=lambda: flask_app.run(host="0.0.0.0", port=8080)).start()
 
-# Helpers
+# Helper functions
 def clean_text(text):
     return re.sub(r'[^a-zA-Z0-9]', '', text.lower())
 
@@ -64,6 +67,7 @@ async def delete_message_later(chat_id, message_id, delay=600):
     except:
         pass
 
+# Save new posts from channel to DB
 @app.on_message(filters.chat(CHANNEL_ID))
 async def save_post(_, msg: Message):
     text = msg.text or msg.caption
@@ -89,6 +93,7 @@ async def save_post(_, msg: Message):
             except:
                 pass
 
+# /start command
 @app.on_message(filters.command("start"))
 async def start(_, msg: Message):
     users_col.update_one(
@@ -102,6 +107,7 @@ async def start(_, msg: Message):
     ])
     await msg.reply_photo(photo=START_PIC, caption="Send me a movie name to search.", reply_markup=btns)
 
+# /feedback command
 @app.on_message(filters.command("feedback") & filters.private)
 async def feedback(_, msg):
     if len(msg.command) < 2:
@@ -114,6 +120,7 @@ async def feedback(_, msg):
     m = await msg.reply("Thanks for your feedback!")
     asyncio.create_task(delete_message_later(m.chat.id, m.id))
 
+# /broadcast command (only admin)
 @app.on_message(filters.command("broadcast") & filters.user(ADMIN_IDS))
 async def broadcast(_, msg):
     if len(msg.command) < 2:
@@ -127,6 +134,7 @@ async def broadcast(_, msg):
             pass
     await msg.reply(f"Broadcast sent to {count} users.")
 
+# /stats command (only admin)
 @app.on_message(filters.command("stats") & filters.user(ADMIN_IDS))
 async def stats(_, msg):
     await msg.reply(
@@ -135,6 +143,7 @@ async def stats(_, msg):
         f"Feedbacks: {feedback_col.count_documents({})}"
     )
 
+# /notify on/off command (only admin)
 @app.on_message(filters.command("notify") & filters.user(ADMIN_IDS))
 async def notify_command(_, msg: Message):
     if len(msg.command) != 2 or msg.command[1] not in ["on", "off"]:
@@ -148,7 +157,8 @@ async def notify_command(_, msg: Message):
     status = "enabled" if new_value else "disabled"
     await msg.reply(f"✅ Global notifications {status}!")
 
-@app.on_message(filters.text)
+# Search movies by user text message
+@app.on_message(filters.text & ~filters.command)
 async def search(_, msg):
     raw_query = msg.text.strip()
     if len(raw_query) < 3:
@@ -164,10 +174,12 @@ async def search(_, msg):
     loading = await msg.reply("🔎 লোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
     all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
 
-    movie_titles = [m["title"] for m in all_movies]
+    # Check title key exists and is not empty
+    movie_titles = [m["title"] for m in all_movies if "title" in m and m["title"]]
+
     matched = process.extract(raw_query, movie_titles, scorer=fuzz.partial_ratio, limit=RESULTS_COUNT)
     matched_titles = [match[0] for match in matched if match[1] >= 50]
-    suggestions = [m for m in all_movies if m["title"] in matched_titles]
+    suggestions = [m for m in all_movies if m.get("title") in matched_titles]
 
     if suggestions:
         await loading.delete()
@@ -213,6 +225,7 @@ async def search(_, msg):
             reply_markup=btn
         )
 
+# Callback query handler for buttons
 @app.on_callback_query()
 async def callback_handler(_, cq: CallbackQuery):
     data = cq.data
