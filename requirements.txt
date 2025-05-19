@@ -1,5 +1,5 @@
-pyrogram==2.0.106
-tgcrypto
-pymongo
-flask
-dnspython
+pyrogram==2.0.67
+tgcrypto==1.2.3
+pymongo==4.3.3
+flask==2.2.5
+rapidfuzz==2.16.1
