@@ -279,5 +279,6 @@ async def callback_handler(_, cq: CallbackQuery):
                 await cq.answer()
 
 if __name__ == "__main__":
-    print("Bot is starting...")
-    app.run()
+    print("Bot is starting...")
+    app.run()
+
