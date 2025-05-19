@@ -19,6 +19,7 @@ START_PIC = "https://i.ibb.co/prnGXMr3/photo-2025-05-16-05-15-45-750490842862452
 
 app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
+# Simple file-based DB
 MOVIE_DB = "movies.json"
 USER_DB = "users.json"
 
@@ -68,10 +69,11 @@ async def search(_, msg: Message):
     loading = await msg.reply("🔎 Searching, please wait...")
     user_cache.add(msg.chat.id)
     save_data(USER_DB, list(user_cache))
+
     matched = [m for m in movie_cache if query in m.get("clean", "") and m.get("lang") == lang]
 
     if not matched:
-        await loading.edit("❌ Movie not found.\nAdmin has been notified. Please wait for update.")
+        await loading.edit("❌ Movie not found. Admin has been notified. Please wait for an update.")
         await asyncio.sleep(DELETE_DELAY)
         await msg.delete()
         await loading.delete()
@@ -93,7 +95,7 @@ async def cb_handler(_, cq: CallbackQuery):
             await asyncio.sleep(DELETE_DELAY)
             await sent.delete()
         except:
-            await cq.answer("❌ Failed to forward. Might be deleted.", show_alert=True)
+            await cq.answer("Failed to forward. Might be deleted.", show_alert=True)
 
 @app.on_message(filters.command("stats") & filters.private)
 async def stats(_, msg: Message):
@@ -116,19 +118,13 @@ async def broadcast(_, msg: Message):
             fail += 1
     await msg.reply(f"✅ Broadcast complete.\nSuccess: {success}, Failed: {fail}")
 
-@app.on_message(filters.command("recache") & filters.user(ADMIN_IDS))
+@app.on_message(filters.command("recache") & filters.private)
 async def recache(_, msg: Message):
-    async for m in app.get_chat_history(CHANNEL_ID, limit=1000):
-        title = m.caption or m.text
-        if not title: continue
-        movie_cache.append({
-            "title": title,
-            "clean": clean(title),
-            "message_id": m.id,
-            "lang": detect_language(title)
-        })
-    save_data(MOVIE_DB, movie_cache)
-    await msg.reply("✅ Re-cached last 1000 messages.")
+    if msg.from_user.id not in ADMIN_IDS:
+        return await msg.reply("❌ You are not authorized.")
+    movie_cache.clear()
+    save_data(MOVIE_DB, [])
+    await msg.reply("♻️ Movie cache cleared.\nUpload or forward movie messages to re-cache.")
 
 if __name__ == "__main__":
     print("Bot is running...")
