@@ -62,11 +62,11 @@ async def start(_, msg: Message):
 @app.on_message(filters.text & filters.private)
 async def search(_, msg: Message):
     query = clean(msg.text.strip())
-    lang = detect_language(msg.text)
-    loading = await msg.reply("🔎 Searching, please wait...")
+    loading = await msg.reply("\ud83d\udd0e Searching, please wait...")
     movie_cache.append({"chat_id": msg.chat.id})  # Track user
 
-    matched = [m for m in movie_cache if query in m.get("clean", "") and m.get("lang") == lang]
+    matched = [m for m in movie_cache if query in m.get("clean", "")]
+
     if not matched:
         await asyncio.sleep(DELETE_DELAY)
         await msg.delete()
@@ -98,15 +98,15 @@ async def cb_handler(_, cq: CallbackQuery):
 @app.on_message(filters.command("stats") & filters.private)
 async def stats(_, msg: Message):
     if msg.from_user.id not in ADMIN_IDS:
-        return await msg.reply("❌ You are not authorized.")
+        return await msg.reply("\u274c You are not authorized.")
     total_movies = len([m for m in movie_cache if "title" in m])
     total_users = len(set(m["chat_id"] for m in movie_cache if "chat_id" in m))
-    await msg.reply(f"📊 Stats:\n• Total Movies: {total_movies}\n• Unique Users: {total_users}")
+    await msg.reply(f"\ud83d\udcca Stats:\n\u2022 Total Movies: {total_movies}\n\u2022 Unique Users: {total_users}")
 
 @app.on_message(filters.command("broadcast") & filters.private)
 async def broadcast(_, msg: Message):
     if msg.from_user.id not in ADMIN_IDS:
-        return await msg.reply("❌ You are not authorized.")
+        return await msg.reply("\u274c You are not authorized.")
     if not msg.reply_to_message:
         return await msg.reply("Reply to a message to broadcast it.")
 
@@ -118,7 +118,7 @@ async def broadcast(_, msg: Message):
             success += 1
         except:
             fail += 1
-    await msg.reply(f"✅ Broadcast complete.\nSuccess: {success}, Failed: {fail}")
+    await msg.reply(f"\u2705 Broadcast complete.\nSuccess: {success}, Failed: {fail}")
 
 if __name__ == "__main__":
     print("Bot is running...")
