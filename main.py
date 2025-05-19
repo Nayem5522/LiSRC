@@ -13,7 +13,7 @@ CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 RESULTS_COUNT = int(os.getenv("RESULTS_COUNT", 10))
 ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(","))) if os.getenv("ADMIN_IDS") else []
 UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL", "https://t.me/CTGMovieOfficial")
-START_PIC = os.getenv("START_PIC"https://i.ibb.co/prnGXMr3/photo-2025-05-16-05-15-45-7504908428624527364.jpg
+START_PIC = os.getenv("START_PIC"https://i.ibb.co/prnGXMr3/photo-2025-05-16-05-15-45-7504908428624527364.jpg"
 
 app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
