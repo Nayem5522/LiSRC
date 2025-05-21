@@ -1,6 +1,6 @@
-pyrogram==2.0.36
-tgcrypto==1.2.5
-pymongo[srv]==4.3.3
-Flask==2.3.2
-fuzzywuzzy==0.18.0
-python-Levenshtein==0.21.1
+pyrogram==2.0.106
+tgcrypto
+pymongo
+flask
+fuzzywuzzy
+python-Levenshtein
