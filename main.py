@@ -6,25 +6,27 @@ import os
 import re
 from datetime import datetime
 
+# Environment variables থেকে নেয়া
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
-ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS","").split(",")))
+ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(",")))
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# Pyrogram client & MongoDB connection
 app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 mongo = MongoClient(DATABASE_URL)
 db = mongo["movie_bot"]
 movies_col = db["movies"]
 users_col = db["users"]
 feedback_col = db["feedback"]
-settings_col = db["settings"]
 
-# --- Utilities ---
+# Text clean function for better search
 def clean_text(text):
     return re.sub(r'[^a-zA-Z0-9]', '', text.lower())
 
+# Auto delete message helper
 async def delete_message_later(chat_id, message_id, delay=600):
     await asyncio.sleep(delay)
     try:
@@ -32,18 +34,23 @@ async def delete_message_later(chat_id, message_id, delay=600):
     except:
         pass
 
-# --- Start handler ---
+# Start command handler
 @app.on_message(filters.command("start"))
 async def start_handler(client, message):
-    # Add user to DB
-    users_col.update_one({"_id": message.from_user.id}, {"$set": {"joined": datetime.utcnow(), "notify": True}}, upsert=True)
+    users_col.update_one(
+        {"_id": message.from_user.id},
+        {"$set": {"joined": datetime.utcnow(), "notify": True}},
+        upsert=True
+    )
     buttons = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Update Channel", url="https://t.me/CTGMovieOfficial")],
-         [InlineKeyboardButton("Contact Admin", url="https://t.me/ctgmovies23")]]
+        [
+            [InlineKeyboardButton("Update Channel", url="https://t.me/CTGMovieOfficial")],
+            [InlineKeyboardButton("Contact Admin", url="https://t.me/ctgmovies23")]
+        ]
     )
     await message.reply("Welcome! Send me a movie name to search.", reply_markup=buttons)
 
-# --- Movie saving (from channel posts) ---
+# Save movies posted in the linked channel
 @app.on_message(filters.chat(CHANNEL_ID))
 async def save_movie_post(client, message):
     text = message.text or message.caption
@@ -53,23 +60,23 @@ async def save_movie_post(client, message):
         "message_id": message.id,
         "title": text,
         "date": message.date,
-        "language": "Unknown",  # optionally extract language
+        "language": "Unknown"  # ইচ্ছা হলে এখানে ল্যাঙ্গুয়েজ ডিটেক্ট করতে পারো
     }
     movies_col.update_one({"message_id": message.id}, {"$set": movie_data}, upsert=True)
 
-# --- Search ---
+# Search movie handler
 @app.on_message(filters.text & ~filters.command)
 async def search_movies(client, message):
     query = message.text.strip()
-    cleaned = clean_text(query)
+    cleaned_query = clean_text(query)
 
-    # Search exact match first
+    # Exact or close match first
     movie = movies_col.find_one({"title": {"$regex": re.escape(query), "$options": "i"}})
     if movie:
         await client.forward_messages(message.chat.id, CHANNEL_ID, movie["message_id"])
         return
 
-    # Fuzzy / partial matches
+    # Multiple matches (fuzzy search)
     matches = list(movies_col.find({"title": {"$regex": query, "$options": "i"}}).limit(10))
     if matches:
         buttons = [
@@ -79,14 +86,12 @@ async def search_movies(client, message):
         await message.reply("Found multiple matches, select one:", reply_markup=InlineKeyboardMarkup(buttons))
         return
 
-    # No results found - notify admin & suggest Google search
-    google_url = "https://www.google.com/search?q=" + re.sub(" ", "+", query)
-    buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Search on Google", url=google_url)]
-    ])
+    # No results found
+    google_url = "https://www.google.com/search?q=" + re.sub(r"\s+", "+", query)
+    buttons = InlineKeyboardMarkup([[InlineKeyboardButton("Search on Google", url=google_url)]])
     await message.reply("No movie found. You can try Google search.", reply_markup=buttons)
 
-    # Notify admins with inline buttons to reply/request movie
+    # Notify admins about the request
     admin_buttons = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✅ Exists", callback_data=f"admin_yes_{message.from_user.id}_{query}"),
@@ -98,9 +103,12 @@ async def search_movies(client, message):
         ]
     ])
     for admin_id in ADMIN_IDS:
-        await client.send_message(admin_id, f"User {message.from_user.first_name} requested movie: {query}", reply_markup=admin_buttons)
+        try:
+            await client.send_message(admin_id, f"User {message.from_user.first_name} requested movie: {query}", reply_markup=admin_buttons)
+        except:
+            continue
 
-# --- Callback Query for movie selection and admin replies ---
+# Callback Query handler for buttons
 @app.on_callback_query()
 async def callback_handler(client, cq: CallbackQuery):
     data = cq.data
@@ -110,7 +118,6 @@ async def callback_handler(client, cq: CallbackQuery):
         await cq.answer("Here is your movie.")
 
     elif data.startswith("admin_"):
-        # Admin feedback on movie requests
         parts = data.split("_")
         action = parts[1]
         user_id = int(parts[2])
@@ -126,7 +133,7 @@ async def callback_handler(client, cq: CallbackQuery):
         elif action == "soon":
             reply_text = f"Admin says: Movie '{query}' will be available soon."
         elif action == "wrong":
-            reply_text = f"Admin says: Please check the movie name again."
+            reply_text = "Admin says: Please check the movie name again."
 
         try:
             await client.send_message(user_id, reply_text)
@@ -134,21 +141,21 @@ async def callback_handler(client, cq: CallbackQuery):
         except:
             await cq.answer("Failed to notify user.")
 
-# --- Feedback ---
+# Feedback command handler
 @app.on_message(filters.command("feedback"))
 async def feedback_handler(client, message):
-    text = message.text.split(None, 1)
-    if len(text) < 2:
+    parts = message.text.split(None, 1)
+    if len(parts) < 2:
         await message.reply("Please write feedback after /feedback.")
         return
     feedback_col.insert_one({
         "user_id": message.from_user.id,
-        "feedback": text[1],
+        "feedback": parts[1],
         "time": datetime.utcnow()
     })
     await message.reply("Thanks for your feedback!")
 
-# --- Admin commands: /broadcast, /stats, /deletemovie ---
+# Admin only broadcast message command
 @app.on_message(filters.command("broadcast") & filters.user(ADMIN_IDS))
 async def broadcast(client, message):
     if len(message.command) < 2:
@@ -164,6 +171,7 @@ async def broadcast(client, message):
             continue
     await message.reply(f"Broadcast sent to {count} users.")
 
+# Admin stats command
 @app.on_message(filters.command("stats") & filters.user(ADMIN_IDS))
 async def stats(client, message):
     users_count = users_col.count_documents({})
@@ -171,6 +179,7 @@ async def stats(client, message):
     feedback_count = feedback_col.count_documents({})
     await message.reply(f"Users: {users_count}\nMovies: {movies_count}\nFeedback: {feedback_count}")
 
+# Admin command to delete movie by message_id
 @app.on_message(filters.command("deletemovie") & filters.user(ADMIN_IDS))
 async def deletemovie(client, message):
     if len(message.command) < 2:
@@ -187,5 +196,6 @@ async def deletemovie(client, message):
     else:
         await message.reply("No movie found with that ID.")
 
+# Run the bot
 if __name__ == "__main__":
     app.run()
