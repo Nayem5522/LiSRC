@@ -1,11 +1,5 @@
-Flask==2.2.3
-pyrogram
-tgcrypto
-pymongo
-asyncio
-requests
-aiohttp==3.8.2
-aiofiles
-Pillow
-psutil
-gunicorn==20.1.0
+pyrogram==2.0.46
+pymongo==4.3.3
+flask==2.3.2
+fuzzywuzzy==0.18.0
+python-Levenshtein==0.21.1
