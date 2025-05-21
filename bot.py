@@ -7,10 +7,10 @@ import os
 import re
 from datetime import datetime
 import asyncio
-from rapidfuzz import fuzz, process
+from rapidfuzz import fuzz
 import urllib.parse
 
-# Configs
+# Configs from environment variables
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -21,18 +21,18 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL", "https://t.me/CTGMovieOfficial")
 START_PIC = os.getenv("START_PIC", "https://i.ibb.co/prnGXMr3/photo-2025-05-16-05-15-45-7504908428624527364.jpg")
 
+# Initialize Pyrogram Client
 app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# MongoDB setup
+# MongoDB connection
 mongo = MongoClient(DATABASE_URL)
 db = mongo["movie_bot"]
 movies_col = db["movies"]
 feedback_col = db["feedback"]
-stats_col = db["stats"]
 users_col = db["users"]
 settings_col = db["settings"]
 
-# Indexes
+# Create indexes
 movies_col.create_index([("title", ASCENDING)])
 movies_col.create_index("message_id")
 movies_col.create_index("language")
@@ -63,7 +63,7 @@ async def delete_message_later(chat_id, message_id, delay=600):
     except:
         pass
 
-# Save movie post to DB
+# Save new movie posts from channel to DB
 @app.on_message(filters.chat(CHANNEL_ID))
 async def save_post(_, msg: Message):
     text = msg.text or msg.caption
@@ -116,7 +116,7 @@ async def feedback(_, msg):
     m = await msg.reply("Thanks for your feedback!")
     asyncio.create_task(delete_message_later(m.chat.id, m.id))
 
-# Broadcast command
+# Broadcast command (admin only)
 @app.on_message(filters.command("broadcast") & filters.user(ADMIN_IDS))
 async def broadcast(_, msg):
     if len(msg.command) < 2:
@@ -130,7 +130,7 @@ async def broadcast(_, msg):
             pass
     await msg.reply(f"Broadcast sent to {count} users.")
 
-# Stats command
+# Stats command (admin only)
 @app.on_message(filters.command("stats") & filters.user(ADMIN_IDS))
 async def stats(_, msg):
     await msg.reply(
@@ -139,14 +139,16 @@ async def stats(_, msg):
         f"Feedbacks: {feedback_col.count_documents({})}"
     )
 
-# Search function
+# Fuzzy search function (fixed)
 def fuzzy_search(query, all_movies):
+    valid_movies = [m for m in all_movies if m.get('title') and isinstance(m['title'], str)]
     return sorted(
-        all_movies,
-        key=lambda m: fuzz.partial_ratio(query, m['title']),
+        valid_movies,
+        key=lambda m: fuzz.partial_ratio(query.lower(), m['title'].lower()),
         reverse=True
     )
 
+# Search handler
 @app.on_message(filters.text)
 async def search(_, msg):
     raw_query = msg.text.strip()
@@ -159,8 +161,7 @@ async def search(_, msg):
 
     loading = await msg.reply("🔎 Searching, please wait...")
     all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
-    
-    # Fuzzy search
+
     matches = fuzzy_search(query, all_movies)[:RESULTS_COUNT]
 
     if matches:
@@ -173,7 +174,6 @@ async def search(_, msg):
         asyncio.create_task(delete_message_later(m.chat.id, m.id))
         return
 
-    # If no matches, show Google search button
     await loading.delete()
     google_search_url = "https://www.google.com/search?q=" + urllib.parse.quote(raw_query)
     google_button = InlineKeyboardMarkup([
