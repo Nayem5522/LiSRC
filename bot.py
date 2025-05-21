@@ -9,8 +9,8 @@ from datetime import datetime
 import asyncio
 import urllib.parse
 
-from fuzzywuzzy import fuzz  # নতুন
-import Levenshtein  # নতুন
+from fuzzywuzzy import fuzz
+import Levenshtein
 
 # Configs
 API_ID = int(os.getenv("API_ID"))
@@ -51,7 +51,7 @@ def clean_text(text):
     return re.sub(r'[^a-zA-Z0-9]', '', text.lower())
 
 def extract_year(text):
-    match = re.search(r"(19|20)\d{2}", text)
+    match = re.search(r"(?:19|20)\d{2}", text)
     return match.group() if match else None
 
 def extract_language(text):
@@ -180,8 +180,7 @@ async def search(_, msg):
 
     loading = await msg.reply("🔎 লোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
     all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
-    
-    # Exact match check
+
     exact_match = [m for m in all_movies if clean_text(m.get("title", "")) == query]
     if exact_match:
         await loading.delete()
@@ -192,7 +191,6 @@ async def search(_, msg):
             await asyncio.sleep(0.7)
         return
 
-    # Fuzzy search with fuzzywuzzy + Levenshtein
     fuzzy_matches = []
     for m in all_movies:
         title = m.get("title", "")
@@ -211,10 +209,8 @@ async def search(_, msg):
             InlineKeyboardButton("Hindi", callback_data=f"lang_Hindi_{query}"),
             InlineKeyboardButton("English", callback_data=f"lang_English_{query}")
         ]
-        buttons = [
-            [InlineKeyboardButton(m[1]["title"][:40], callback_data=f"movie_{m[1]['message_id']}")]
-            for m in fuzzy_matches[:RESULTS_COUNT]
-        ]
+        buttons = [[InlineKeyboardButton(m[1]["title"][:40], callback_data=f"movie_{m[1]['message_id']}")]
+                   for m in fuzzy_matches[:RESULTS_COUNT]]
         buttons.append(lang_buttons)
         m = await msg.reply("আপনার মুভির নাম মিলতে পারে, নিচের থেকে সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(buttons))
         asyncio.create_task(delete_message_later(m.chat.id, m.id))
@@ -253,7 +249,7 @@ async def callback_handler(_, cq: CallbackQuery):
     data = cq.data
 
     if data.startswith("movie_"):
-        mid = int(data.split("_")[1])
+        mid = int(data.split("_", 1)[1])
         fwd = await app.forward_messages(cq.message.chat.id, CHANNEL_ID, mid)
         await cq.message.reply("⚠️ এই মুভিটি 10 মিনিট পর অটো ডিলিট হয়ে যাবে।")
         asyncio.create_task(delete_message_later(cq.message.chat.id, fwd.id))
@@ -267,17 +263,14 @@ async def callback_handler(_, cq: CallbackQuery):
             if re.search(re.escape(query), m.get("title", ""), re.IGNORECASE)
         ]
         if matches:
-            buttons = [
-                [InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")]
-                for m in matches[:RESULTS_COUNT]
-            ]
+            buttons = [[InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")]
+                       for m in matches[:RESULTS_COUNT]]
             await cq.message.edit_text(
                 f"ফলাফল ({lang}) - নিচের থেকে সিলেক্ট করুন:",
                 reply_markup=InlineKeyboardMarkup(buttons)
             )
         else:
             await cq.answer("এই ভাষায় কিছু পাওয়া যায়নি।", show_alert=True)
-        await cq.answer()
 
     elif "_" in data:
         parts = data.split("_", 3)
@@ -294,8 +287,6 @@ async def callback_handler(_, cq: CallbackQuery):
                 m = await app.send_message(uid, responses[action])
                 asyncio.create_task(delete_message_later(m.chat.id, m.id))
                 await cq.answer("অ্যাডমিনের পক্ষ থেকে উত্তর পাঠানো হয়েছে।")
-            else:
-                await cq.answer()
 
 if __name__ == "__main__":
     print("Bot is starting...")
