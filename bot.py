@@ -192,14 +192,18 @@ async def search(_, msg):
             await asyncio.sleep(0.7)
         return
 
-    # Fuzzy search with fuzzywuzzy
+    # Fuzzy search with fuzzywuzzy + Levenshtein
     fuzzy_matches = []
     for m in all_movies:
         title = m.get("title", "")
-        score = fuzz.token_set_ratio(raw_query.lower(), title.lower())
-        if score >= 60:  # থ্রেশহোল্ড সেট করতে পারো চাইলে
-            fuzzy_matches.append((score, m))
+        fuzz_score = fuzz.token_set_ratio(raw_query.lower(), title.lower())
+        lev_score = Levenshtein.ratio(raw_query.lower(), title.lower()) * 100
+        combined_score = (fuzz_score + lev_score) / 2
+        if combined_score >= 60:
+            fuzzy_matches.append((combined_score, m))
+
     fuzzy_matches.sort(key=lambda x: x[0], reverse=True)
+
     if fuzzy_matches:
         await loading.delete()
         lang_buttons = [
