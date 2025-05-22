@@ -1,9 +1,10 @@
-# telegram_movie_bot_final.py
+# telegram_movie_bot_web.py
 
 import os
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from flask import Flask
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pymongo import MongoClient
@@ -18,14 +19,21 @@ logger = logging.getLogger(__name__)
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = [int(x) for x in os.getenv("ADMINS", "").split()]  # comma-separated admin IDs
+ADMIN_IDS = [int(x) for x in os.getenv("ADMINS", "").split()]
 DB_URI = os.getenv("MONGO_URI")
 DB_NAME = os.getenv("DB_NAME", "movie_bot")
 LOG_CHANNEL = int(os.getenv("LOG_CHANNEL", 0))
 MOVIE_CHANNEL = os.getenv("MOVIE_CHANNEL")
 AUTO_DELETE_TIME = int(os.getenv("AUTO_DELETE_TIME", 10))
 
-# Initialize bot and database
+# Flask app for web service
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+# Pyrogram bot
 bot = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 mongo = MongoClient(DB_URI)
 db = mongo[DB_NAME]
@@ -56,7 +64,6 @@ async def delete_message_later(chat_id, message_id, delay):
     except:
         pass
 
-# CAPTCHA Handler
 captcha_answers = {}
 
 @bot.on_message(filters.private & filters.command("start"))
@@ -95,7 +102,6 @@ async def captcha_check(client, message):
             await message.reply("Please send a number as answer.")
         return
 
-    # Regular movie search
     query = message.text.strip()
     all_movies = await get_movies()
     results = process.extract(query, all_movies, limit=10)
@@ -129,7 +135,6 @@ async def movie_callback(client, query: CallbackQuery):
     )
     asyncio.create_task(delete_message_later(msg.chat.id, msg.id, AUTO_DELETE_TIME * 60))
 
-# Admin & User commands
 @bot.on_message(filters.command("myinfo") & filters.private)
 async def myinfo_handler(_, m):
     user = users_col.find_one({"_id": m.from_user.id})
@@ -167,5 +172,10 @@ async def feedback(_, m):
     feedback_col.insert_one({"user": m.from_user.first_name, "text": fb[1]})
     await m.reply("Thanks for your feedback!")
 
-# Start bot
-bot.run()
+# Start both Flask and Pyrogram
+if __name__ == "__main__":
+    import threading
+
+    threading.Thread(target=bot.run).start()
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
