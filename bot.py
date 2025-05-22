@@ -183,13 +183,14 @@ async def search(_, msg):
 
     exact_match = [m for m in all_movies if clean_text(m.get("title", "")) == query]
     if exact_match:
-        await loading.delete()
-        for m in exact_match[:RESULTS_COUNT]:
-            fwd = await app.forward_messages(msg.chat.id, CHANNEL_ID, m["message_id"])
-            await msg.reply("⚠️ এই মুভিটি 10 মিনিট পর অটো ডিলিট হয়ে যাবে।")
-            asyncio.create_task(delete_message_later(msg.chat.id, fwd.id))
-            await asyncio.sleep(0.7)
-        return
+    await loading.delete()
+    for m in exact_match[:RESULTS_COUNT]:
+        fwd = await app.forward_messages(msg.chat.id, CHANNEL_ID, m["message_id"])
+        warn = await msg.reply("⚠️ এই মুভিটি 10 মিনিট পর অটো ডিলিট হয়ে যাবে।")
+        asyncio.create_task(delete_message_later(msg.chat.id, fwd.id))
+        asyncio.create_task(delete_message_later(msg.chat.id, warn.id))
+        await asyncio.sleep(0.7)
+    return
 
     fuzzy_matches = []
     for m in all_movies:
