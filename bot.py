@@ -187,6 +187,7 @@ async def search(_, msg):
         for m in exact_match[:RESULTS_COUNT]:
             fwd = await app.forward_messages(msg.chat.id, CHANNEL_ID, m["message_id"])
 warn = await msg.reply("⚠️ এই মুভিটি 10 মিনিট পর অটো ডিলিট হয়ে যাবে।")
+
 asyncio.create_task(delete_message_later(msg.chat.id, fwd.id))
 asyncio.create_task(delete_message_later(warn.chat.id, warn.id))
             await asyncio.sleep(0.7)
@@ -253,6 +254,7 @@ async def callback_handler(_, cq: CallbackQuery):
         mid = int(data.split("_", 1)[1])
         fwd = await app.forward_messages(cq.message.chat.id, CHANNEL_ID, mid)
 warn = await cq.message.reply("⚠️ এই মুভিটি 10 মিনিট পর অটো ডিলিট হয়ে যাবে।")
+
 asyncio.create_task(delete_message_later(cq.message.chat.id, fwd.id))
 asyncio.create_task(delete_message_later(warn.chat.id, warn.id))
         await cq.answer("মুভি পাঠানো হয়েছে।")
