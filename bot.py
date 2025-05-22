@@ -34,7 +34,7 @@ stats_col = db["stats"]
 users_col = db["users"]
 settings_col = db["settings"]
 
-# Index
+# Indexes
 movies_col.create_index([("title", ASCENDING)])
 movies_col.create_index("message_id")
 movies_col.create_index("language")
@@ -65,6 +65,7 @@ async def delete_message_later(chat_id, message_id, delay=600):
     except:
         pass
 
+# Save movie on post
 @app.on_message(filters.chat(CHANNEL_ID))
 async def save_post(_, msg: Message):
     text = msg.text or msg.caption
@@ -90,6 +91,7 @@ async def save_post(_, msg: Message):
             except:
                 pass
 
+# /start
 @app.on_message(filters.command("start"))
 async def start(_, msg: Message):
     users_col.update_one(
@@ -103,6 +105,7 @@ async def start(_, msg: Message):
     ])
     await msg.reply_photo(photo=START_PIC, caption="Send me a movie name to search.", reply_markup=btns)
 
+# Feedback
 @app.on_message(filters.command("feedback") & filters.private)
 async def feedback(_, msg):
     if len(msg.command) < 2:
@@ -115,6 +118,7 @@ async def feedback(_, msg):
     m = await msg.reply("Thanks for your feedback!")
     asyncio.create_task(delete_message_later(m.chat.id, m.id))
 
+# Broadcast
 @app.on_message(filters.command("broadcast") & filters.user(ADMIN_IDS))
 async def broadcast(_, msg):
     if len(msg.command) < 2:
@@ -128,6 +132,7 @@ async def broadcast(_, msg):
             pass
     await msg.reply(f"Broadcast sent to {count} users.")
 
+# Stats
 @app.on_message(filters.command("stats") & filters.user(ADMIN_IDS))
 async def stats(_, msg):
     await msg.reply(
@@ -136,6 +141,7 @@ async def stats(_, msg):
         f"Feedbacks: {feedback_col.count_documents({})}"
     )
 
+# Delete Movie by ID
 @app.on_message(filters.command("delete_movie") & filters.user(ADMIN_IDS))
 async def delete_movie(_, msg):
     if len(msg.command) != 2:
@@ -150,11 +156,13 @@ async def delete_movie(_, msg):
     except:
         await msg.reply("⚠️ Movie ID একটি সংখ্যা হওয়া প্রয়োজন।")
 
+# Delete All Movies
 @app.on_message(filters.command("delete_all_movies") & filters.user(ADMIN_IDS))
 async def delete_all_movies(_, msg):
     result = movies_col.delete_many({})
     await msg.reply(f"🗑️ মোট {result.deleted_count} টি মুভি ডিলিট করা হয়েছে।")
 
+# Toggle Global Notification
 @app.on_message(filters.command("notify") & filters.user(ADMIN_IDS))
 async def notify_command(_, msg: Message):
     if len(msg.command) != 2 or msg.command[1] not in ["on", "off"]:
@@ -168,7 +176,8 @@ async def notify_command(_, msg: Message):
     status = "enabled" if new_value else "disabled"
     await msg.reply(f"✅ Global notifications {status}!")
 
-@app.on_message(filters.text)
+# Search
+@app.on_message(filters.text & filters.private)
 async def search(_, msg):
     raw_query = msg.text.strip()
     query = clean_text(raw_query)
@@ -182,16 +191,16 @@ async def search(_, msg):
     all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
 
     exact_match = [m for m in all_movies if clean_text(m.get("title", "")) == query]
-   
+
     if exact_match:
-    await loading.delete()
-    for m in exact_match[:RESULTS_COUNT]:
-        fwd = await app.forward_messages(msg.chat.id, CHANNEL_ID, m["message_id"])
-        warn = await msg.reply("⚠️ এই মুভিটি 10 মিনিট পর অটো ডিলিট হয়ে যাবে।")
-        asyncio.create_task(delete_message_later(msg.chat.id, fwd.id))
-        asyncio.create_task(delete_message_later(msg.chat.id, warn.id))
-        await asyncio.sleep(0.7)
-    return
+        await loading.delete()
+        for m in exact_match[:RESULTS_COUNT]:
+            fwd = await app.forward_messages(msg.chat.id, CHANNEL_ID, m["message_id"])
+            warn = await msg.reply("⚠️ এই মুভিটি 10 মিনিট পর অটো ডিলিট হয়ে যাবে।")
+            asyncio.create_task(delete_message_later(msg.chat.id, fwd.id))
+            asyncio.create_task(delete_message_later(msg.chat.id, warn.id))
+            await asyncio.sleep(0.7)
+        return
 
     fuzzy_matches = []
     for m in all_movies:
@@ -246,6 +255,7 @@ async def search(_, msg):
             reply_markup=btn
         )
 
+# Callback Queries
 @app.on_callback_query()
 async def callback_handler(_, cq: CallbackQuery):
     data = cq.data
@@ -253,10 +263,9 @@ async def callback_handler(_, cq: CallbackQuery):
     if data.startswith("movie_"):
         mid = int(data.split("_", 1)[1])
         fwd = await app.forward_messages(cq.message.chat.id, CHANNEL_ID, mid)
-warn = await cq.message.reply("⚠️ এই মুভিটি 10 মিনিট পর অটো ডিলিট হয়ে যাবে।")
-
-asyncio.create_task(delete_message_later(cq.message.chat.id, fwd.id))
-asyncio.create_task(delete_message_later(warn.chat.id, warn.id))
+        warn = await cq.message.reply("⚠️ এই মুভিটি 10 মিনিট পর অটো ডিলিট হয়ে যাবে।")
+        asyncio.create_task(delete_message_later(cq.message.chat.id, fwd.id))
+        asyncio.create_task(delete_message_later(warn.chat.id, warn.id))
         await cq.answer("মুভি পাঠানো হয়েছে।")
 
     elif data.startswith("lang_"):
