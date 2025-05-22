@@ -182,6 +182,7 @@ async def search(_, msg):
     all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
 
     exact_match = [m for m in all_movies if clean_text(m.get("title", "")) == query]
+   
     if exact_match:
     await loading.delete()
     for m in exact_match[:RESULTS_COUNT]:
