@@ -158,6 +158,17 @@ async def broadcast_msg(client, message):
             continue
     await message.reply("ব্রডকাস্ট সম্পন্ন হয়েছে।")
 
+@bot.on_message(filters.command("delete") & filters.user(admin_ids))
+async def delete_movie(client, message):
+    if len(message.command) < 2:
+        return await message.reply("ব্যবহার: /delete <message_id>")
+    try:
+        msg_id = int(message.command[1])
+        await user_client.delete_messages(CHANNEL_USERNAME, msg_id)
+        await message.reply(f"মেসেজ {msg_id} ডিলিট করা হয়েছে।")
+    except Exception as e:
+        await message.reply("ডিলিট করতে ব্যর্থ।")
+
 keep_alive()
 user_client.start()
 bot.run()
