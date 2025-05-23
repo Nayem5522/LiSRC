@@ -1,47 +1,43 @@
-from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InlineQueryResultArticle, InputTextMessageContent
-from flask import Flask
-from threading import Thread
-from fuzzywuzzy import fuzz
-import asyncio
 import os
 import re
+import asyncio
+from threading import Thread
+from flask import Flask
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InlineQueryResultArticle, InputTextMessageContent
+from fuzzywuzzy import fuzz
 
+# --- Environment Variables ---
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-SESSION_STRING = os.getenv("SESSION_STRING")
-CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME")  # চ্যানেল ইউজারনেম, যেমন: @YourChannelName
-DELETE_DELAY = int(os.getenv("DELETE_DELAY", 300))  # মুভি মেসেজ কত সেকেন্ড পরে ডিলিট হবে
+SESSION_STRING = os.getenv("SESSION_STRING")  # User Session String (must be from same account as CHANNEL_USERNAME)
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME")  # @channelusername or channel ID (e.g. -100123456789)
+DELETE_DELAY = int(os.getenv("DELETE_DELAY", 300))  # seconds to auto-delete sent messages
 
-# ইউজার সেশন ক্লায়েন্ট (চ্যানেল থেকে মেসেজ খোঁজার জন্য)
+# --- Initialize clients ---
 user_client = Client("user_session", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING)
+bot = Client("bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# বট ক্লায়েন্ট (বট টোকেন দিয়ে)
-bot = Client("bot_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
+# --- Flask app for keep-alive ---
 app = Flask(__name__)
 
-# হোমপেজ
-@app.route('/')
+@app.route("/")
 def home():
-    return "Bot is running!"
+    return "Telegram Movie Info Bot is running!"
 
-def run():
+def run_flask():
     app.run(host="0.0.0.0", port=8080)
 
 def keep_alive():
-    t = Thread(target=run)
+    t = Thread(target=run_flask)
     t.start()
 
+# --- Helpers ---
 def normalize(text):
     return re.sub(r"[^a-zA-Z0-9]", "", text.lower())
 
-user_stats = {}
-admin_ids = [123456789]  # তোমার টেলিগ্রাম আইডি এখানে রাখো (অ্যাডমিন ইউজার আইডি)
-blocked_users = set()
-
-LANG_TAGS = ["[Hindi]", "[Bengali]", "[Dual]", "[English]", "[Tamil]", "[Telugu]"]
+LANG_TAGS = ["[Hindi]", "[Bengali]", "[English]", "[Tamil]", "[Telugu]", "[Dual]"]
 
 def detect_language(text):
     for tag in LANG_TAGS:
@@ -49,66 +45,76 @@ def detect_language(text):
             return tag
     return "[Unknown]"
 
-@bot.on_message((filters.private | filters.group) & filters.text)
-async def movie_search_handler(client, message):
-    if message.from_user.id in blocked_users:
+user_stats = {}
+blocked_users = set()
+admin_ids = [123456789]  # <-- আপনার Telegram ইউজার আইডি এখানে দিন
+
+# --- Bot Handlers ---
+
+# Handle text messages (private & groups)
+@bot.on_message(filters.text & (filters.private | filters.group))
+async def search_movies(client, message):
+    user_id = message.from_user.id
+    if user_id in blocked_users:
         return
 
     query = normalize(message.text.strip())
     if not query:
-        return await message.reply("দয়া করে একটি মুভির নাম লিখুন")
+        await message.reply("দয়া করে মুভির নাম লিখুন।")
+        return
 
-    user_stats[message.from_user.id] = user_stats.get(message.from_user.id, 0) + 1
+    user_stats[user_id] = user_stats.get(user_id, 0) + 1
 
     results = []
-    async for msg in user_client.search_messages(CHANNEL_USERNAME, query=query, limit=300):
+    async for msg in user_client.search_messages(CHANNEL_USERNAME, query=query, limit=200):
         try:
-            # চ্যানেলে মেসেজ এখনো আছে কি না চেক করবো get_messages দিয়ে
-            check_msg = await user_client.get_messages(CHANNEL_USERNAME, msg.id)
-            content = check_msg.caption or check_msg.text or "Untitled"
+            content = msg.caption or msg.text or ""
             content_norm = normalize(content)
-            if fuzz.partial_ratio(query, content_norm) >= 30:
-                results.append((content[:60], msg.id))
-        except Exception:
-            # মেসেজ ডিলিট বা আনঅ্যাক্সেসেবল হলে স্কিপ করবে
+            score = fuzz.partial_ratio(query, content_norm)
+            if score >= 50:
+                results.append((content, msg.message_id, score))
+        except:
             continue
 
     if not results:
-        return await message.reply("দুঃখিত, কোনো মিল পাওয়া যায়নি। আরও নির্দিষ্ট নাম দিন।")
+        await message.reply("দুঃখিত, কোনো মিল পাওয়া যায়নি। দয়া করে আরেকটু নির্দিষ্ট নাম দিন।")
+        return
 
-    # ফলাফল র‍্যাঙ্কিং
-    results = sorted(results, key=lambda x: fuzz.ratio(query, normalize(x[0])), reverse=True)
-    buttons = [
-        [InlineKeyboardButton(text=title, callback_data=f"movie_{mid}")]
-        for title, mid in results[:7]
-    ]
+    # Sort by fuzzy match score (descending)
+    results.sort(key=lambda x: x[2], reverse=True)
+
+    buttons = []
+    for content, msg_id, _ in results[:7]:
+        lang_tag = detect_language(content)
+        title = content.split("\n")[0][:50]  # প্রথম লাইন থেকে টাইটেল (৫০ ক্যারেক্টার)
+        buttons.append([InlineKeyboardButton(f"{title} {lang_tag}", callback_data=f"movie_{msg_id}")])
 
     await message.reply(
-        "আপনি কোনটি খুঁজছেন? নিচে থেকে সিলেক্ট করুন:",
+        "আপনি কোনটি খুঁজছেন? নিচের বোতাম থেকে সিলেক্ট করুন:",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
+# Handle callback queries when user clicks movie button
 @bot.on_callback_query(filters.regex("^movie_"))
-async def movie_sender(client, callback_query):
-    msg_id = int(callback_query.data.split("_", 1)[1])
+async def send_movie(client, callback_query):
     try:
-        # মেসেজ আছে কি না চেক
+        msg_id = int(callback_query.data.split("_")[1])
         msg = await user_client.get_messages(CHANNEL_USERNAME, msg_id)
-        # মুভি কপি করে ইউজারের কাছে পাঠানো
-        sent = await bot.copy_message(
+        sent_msg = await bot.copy_message(
             chat_id=callback_query.message.chat.id,
             from_chat_id=CHANNEL_USERNAME,
             message_id=msg_id
         )
         await callback_query.message.delete()
-        await callback_query.answer("মুভি পাঠানো হয়েছে")
+        await callback_query.answer("মুভি পাঠানো হয়েছে।")
 
-        # ডিলিট ডিলে পরে মেসেজ ডিলিট করো
+        # Auto delete after delay
         await asyncio.sleep(DELETE_DELAY)
-        await sent.delete()
-    except Exception:
-        await callback_query.answer("মুভি পাঠাতে সমস্যা হয়েছে বা মুভি পাওয়া যায়নি।", show_alert=True)
+        await sent_msg.delete()
+    except Exception as e:
+        await callback_query.answer("মুভি পাঠাতে সমস্যা হয়েছে।", show_alert=True)
 
+# Inline query handler
 @bot.on_inline_query()
 async def inline_query_handler(client, inline_query):
     query = normalize(inline_query.query.strip())
@@ -118,75 +124,78 @@ async def inline_query_handler(client, inline_query):
     results = []
     async for msg in user_client.search_messages(CHANNEL_USERNAME, query=query, limit=100):
         try:
-            check_msg = await user_client.get_messages(CHANNEL_USERNAME, msg.id)
-            content = check_msg.caption or check_msg.text or "Untitled"
+            content = msg.caption or msg.text or ""
             content_norm = normalize(content)
-            if fuzz.partial_ratio(query, content_norm) >= 30:
-                results.append((content, msg.id))
+            score = fuzz.partial_ratio(query, content_norm)
+            if score >= 50:
+                results.append((content, msg.message_id, score))
         except:
             continue
 
-    articles = [
-        InlineQueryResultArticle(
-            title=text[:60],
-            input_message_content=InputTextMessageContent(f"মুভির জন্য অপেক্ষা করুন..."),
-            description=detect_language(text),
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("এই মুভি দেখান", callback_data=f"movie_{mid}")]]
+    results.sort(key=lambda x: x[2], reverse=True)
+
+    articles = []
+    for content, msg_id, _ in results[:10]:
+        lang_tag = detect_language(content)
+        title = content.split("\n")[0][:60]
+        articles.append(
+            InlineQueryResultArticle(
+                title=f"{title} {lang_tag}",
+                input_message_content=InputTextMessageContent(f"মুভির ডিটেইল দেখার জন্য নিচের বোতাম চাপুন।"),
+                description=lang_tag,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("মুভি দেখান", callback_data=f"movie_{msg_id}")]])
             )
-        ) for text, mid in results[:10]
-    ]
-    await inline_query.answer(articles, cache_time=1)
+        )
 
-# অ্যাডমিন কমান্ডস
+    await inline_query.answer(results=articles, cache_time=1)
 
+# Admin commands: stats
 @bot.on_message(filters.command("stats") & filters.user(admin_ids))
-async def show_stats(client, message):
+async def cmd_stats(client, message):
     total_users = len(user_stats)
-    await message.reply(f"মোট ইউজার: {total_users}\n\nDetails:\n" + "\n".join([f"{uid}: {count}" for uid, count in user_stats.items()]))
+    text = f"মোট ইউজার: {total_users}\n\nইউজার ডিটেইলস:\n"
+    text += "\n".join([f"ID: {uid} - কুইরিজ: {count}" for uid, count in user_stats.items()])
+    await message.reply(text)
 
+# Admin commands: block user
 @bot.on_message(filters.command("block") & filters.user(admin_ids))
-async def block_user(client, message):
+async def cmd_block(client, message):
     if len(message.command) < 2:
-        return await message.reply("ব্যবহার: /block user_id")
+        await message.reply("ব্যবহার: /block user_id")
+        return
     uid = int(message.command[1])
     blocked_users.add(uid)
     await message.reply(f"User {uid} ব্লক করা হয়েছে।")
 
+# Admin commands: unblock user
 @bot.on_message(filters.command("unblock") & filters.user(admin_ids))
-async def unblock_user(client, message):
+async def cmd_unblock(client, message):
     if len(message.command) < 2:
-        return await message.reply("ব্যবহার: /unblock user_id")
+        await message.reply("ব্যবহার: /unblock user_id")
+        return
     uid = int(message.command[1])
     blocked_users.discard(uid)
     await message.reply(f"User {uid} আনব্লক করা হয়েছে।")
 
+# Admin commands: broadcast
 @bot.on_message(filters.command("broadcast") & filters.user(admin_ids))
-async def broadcast_msg(client, message):
-    text = message.text.split(" ", 1)[-1] if len(message.text.split(" ", 1)) > 1 else None
-    if not text:
-        return await message.reply("/broadcast <মেসেজ>")
+async def cmd_broadcast(client, message):
+    text = message.text.split(" ", 1)
+    if len(text) < 2:
+        await message.reply("ব্যবহার: /broadcast <মেসেজ>")
+        return
+    msg_text = text[1]
     fail_count = 0
-    for uid in list(user_stats):
+    for uid in list(user_stats.keys()):
         try:
-            await bot.send_message(uid, text)
+            await bot.send_message(uid, msg_text)
         except:
             fail_count += 1
             continue
     await message.reply(f"ব্রডকাস্ট সম্পন্ন হয়েছে। ব্যর্থ হয়েছে: {fail_count}")
 
-@bot.on_message(filters.command("delete") & filters.user(admin_ids))
-async def delete_movie(client, message):
-    if len(message.command) < 2:
-        return await message.reply("ব্যবহার: /delete <message_id>")
-    try:
-        msg_id = int(message.command[1])
-        await user_client.delete_messages(CHANNEL_USERNAME, msg_id)
-        await message.reply(f"মেসেজ {msg_id} ডিলিট করা হয়েছে।")
-    except Exception:
-        await message.reply("ডিলিট করতে ব্যর্থ।")
-
-# Flask + bot চালানোর জন্য
-keep_alive()
-user_client.start()
-bot.run()
+# --- Start the bot and Flask ---
+if __name__ == "__main__":
+    keep_alive()
+    user_client.start()
+    bot.run()
