@@ -58,13 +58,13 @@ async def movie_search_handler(client, message):
 
     results = []
     async for msg in user_client.search_messages(CHANNEL_USERNAME, query=query, limit=3000):
-        content = msg.caption or msg.text or "Untitled"
-        content_norm = normalize(content)
-        if fuzz.partial_ratio(query, content_norm) >= 30:
-            try:
+        try:
+            content = msg.caption or msg.text or "Untitled"
+            content_norm = normalize(content)
+            if fuzz.partial_ratio(query, content_norm) >= 30:
                 results.append((content[:60], msg.id))
-            except:
-                continue
+        except:
+            continue
 
     if not results:
         return await message.reply("দুঃখিত, কোনো মিল পাওয়া যায়নি। আরও নির্দিষ্ট নাম দিন।")
@@ -105,13 +105,13 @@ async def inline_query_handler(client, inline_query):
 
     results = []
     async for msg in user_client.search_messages(CHANNEL_USERNAME, query=query, limit=100):
-        content = msg.caption or msg.text or "Untitled"
-        content_norm = normalize(content)
-        if fuzz.partial_ratio(query, content_norm) >= 30:
-            try:
+        try:
+            content = msg.caption or msg.text or "Untitled"
+            content_norm = normalize(content)
+            if fuzz.partial_ratio(query, content_norm) >= 30:
                 results.append((content, msg.id))
-            except:
-                continue
+        except:
+            continue
 
     articles = [
         InlineQueryResultArticle(
@@ -168,6 +168,20 @@ async def delete_movie(client, message):
         await message.reply(f"মেসেজ {msg_id} ডিলিট করা হয়েছে।")
     except Exception as e:
         await message.reply("ডিলিট করতে ব্যর্থ।")
+
+@bot.on_message(filters.command("clean") & filters.user(admin_ids))
+async def clean_common(client, message):
+    if len(message.command) < 2:
+        return await message.reply("ব্যবহার: /clean <text>")
+    keyword = normalize(" ".join(message.command[1:]))
+    count = 0
+    async for msg in user_client.search_messages(CHANNEL_USERNAME, query=keyword, limit=100):
+        try:
+            await user_client.delete_messages(CHANNEL_USERNAME, msg.id)
+            count += 1
+        except:
+            continue
+    await message.reply(f"{count}টি মেসেজ ডিলিট করা হয়েছে যা '{keyword}' এর সাথে মিলে।")
 
 keep_alive()
 user_client.start()
