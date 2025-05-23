@@ -31,25 +31,28 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
-# Temporary cache to avoid re-searching too often
-cache = {}
+# Normalize string for better matching
+import re
+
+def normalize(text):
+    return re.sub(r"[^a-zA-Z0-9]", "", text.lower())
 
 @bot.on_message((filters.private | filters.group) & filters.text)
 async def movie_search_handler(client, message):
-    query = message.text.strip()
+    query = normalize(message.text.strip())
     if not query:
         return await message.reply("দয়া করে একটি মুভির নাম লিখুন")
 
-    # Search using user_client
     results = []
-    async for msg in user_client.search_messages(CHANNEL_USERNAME, query=query, limit=50):
+    async for msg in user_client.search_messages(CHANNEL_USERNAME, query="", limit=300):
         title = msg.caption or msg.text or "Untitled"
-        results.append((title[:60], msg.id))
+        if normalize(title) and query in normalize(title):
+            results.append((title[:60], msg.id))
 
     if not results:
         return await message.reply("কোনো মুভি পাওয়া যায়নি।")
 
-    # Fuzzy match with unique titles
+    # Fuzzy match
     titles = list(dict.fromkeys([title for title, _ in results]))
     matches = process.extract(query, titles, limit=5)
 
@@ -57,14 +60,12 @@ async def movie_search_handler(client, message):
     used_ids = set()
     for title, _ in matches:
         for t, mid in results:
-            if t == title and mid not in used_ids:
+            if normalize(t) == normalize(title) and mid not in used_ids:
                 buttons.append([InlineKeyboardButton(text=title, callback_data=f"movie_{mid}")])
                 used_ids.add(mid)
                 break
 
-    await message.reply(
-        "আপনি কোনটি খুঁজছেন?", reply_markup=InlineKeyboardMarkup(buttons[:5])
-    )
+    await message.reply("আপনি কোনটি খুঁজছেন?", reply_markup=InlineKeyboardMarkup(buttons[:5]))
 
 @bot.on_callback_query(filters.regex("^movie_"))
 async def movie_sender(client, callback_query):
