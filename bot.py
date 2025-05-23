@@ -59,7 +59,7 @@ async def movie_search_handler(client, message):
     results = []
     async for msg in user_client.search_messages(CHANNEL_USERNAME, query="", limit=3000):
         content = msg.caption or msg.text or "Untitled"
-        if fuzz.partial_ratio(query, normalize(content)) >= 65:
+        if fuzz.partial_ratio(query, normalize(content)) >= 30:
             results.append((content[:60], msg.id))
 
     if not results:
@@ -102,7 +102,7 @@ async def inline_query_handler(client, inline_query):
     results = []
     async for msg in user_client.search_messages(CHANNEL_USERNAME, query="", limit=100):
         content = msg.caption or msg.text or "Untitled"
-        if fuzz.partial_ratio(query, normalize(content)) >= 65:
+        if fuzz.partial_ratio(query, normalize(content)) >= 30:
             results.append((content, msg.id))
 
     articles = [
