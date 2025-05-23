@@ -57,10 +57,14 @@ async def movie_search_handler(client, message):
     user_stats[message.from_user.id] = user_stats.get(message.from_user.id, 0) + 1
 
     results = []
-    async for msg in user_client.search_messages(CHANNEL_USERNAME, query="", limit=3000):
+    async for msg in user_client.search_messages(CHANNEL_USERNAME, query=query, limit=3000):
         content = msg.caption or msg.text or "Untitled"
-        if fuzz.partial_ratio(query, normalize(content)) >= 30:
-            results.append((content[:60], msg.id))
+        content_norm = normalize(content)
+        if fuzz.partial_ratio(query, content_norm) >= 30:
+            try:
+                results.append((content[:60], msg.id))
+            except:
+                continue
 
     if not results:
         return await message.reply("দুঃখিত, কোনো মিল পাওয়া যায়নি। আরও নির্দিষ্ট নাম দিন।")
@@ -100,10 +104,14 @@ async def inline_query_handler(client, inline_query):
         return
 
     results = []
-    async for msg in user_client.search_messages(CHANNEL_USERNAME, query="", limit=100):
+    async for msg in user_client.search_messages(CHANNEL_USERNAME, query=query, limit=100):
         content = msg.caption or msg.text or "Untitled"
-        if fuzz.partial_ratio(query, normalize(content)) >= 30:
-            results.append((content, msg.id))
+        content_norm = normalize(content)
+        if fuzz.partial_ratio(query, content_norm) >= 30:
+            try:
+                results.append((content, msg.id))
+            except:
+                continue
 
     articles = [
         InlineQueryResultArticle(
