@@ -228,14 +228,7 @@ async def search(_, msg):
                 pass
         return
     else:
-        # No direct or fuzzy match, suggest language-based search or Google
-        Google Search_url = "https://www.google.com/search?q=" + urllib.parse.quote(raw_query) # এই লাইনটি সঠিক করা হয়েছে
-        google_button = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Search on Google", url=Google Search_url)]
-        ])
-        
-        # Original suggestion part for language-based searches (can be improved with fuzzy search on language too)
-        # For simplicity, keeping the existing language filter for now if no fuzzy match is found
+        # No direct or fuzzy match, suggest language-based search
         lang_buttons = [
             InlineKeyboardButton("Bengali", callback_data=f"lang_Bengali_{processed_query}"),
             InlineKeyboardButton("Hindi", callback_data=f"lang_Hindi_{processed_query}"),
@@ -243,7 +236,7 @@ async def search(_, msg):
         ]
         
         suggestion_text = "কোনও ফলাফল পাওয়া যায়নি। আপনি কি এই মুভিটি অন্য ভাষায় খুঁজতে চান?"
-        suggestion_markup = InlineKeyboardMarkup([lang_buttons, [InlineKeyboardButton("Google-এ খুঁজুন", url=Google Search_url)]])
+        suggestion_markup = InlineKeyboardMarkup([lang_buttons]) # No Google Search button
         
         alert = await msg.reply(
             suggestion_text,
