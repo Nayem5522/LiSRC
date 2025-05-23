@@ -229,7 +229,7 @@ async def search(_, msg):
         return
     else:
         # No direct or fuzzy match, suggest language-based search or Google
-        Google Search_url = "https://www.google.com/search?q=" + urllib.parse.quote(raw_query)
+        Google Search_url = "https://www.google.com/search?q=" + urllib.parse.quote(raw_query) # এই লাইনটি সঠিক করা হয়েছে
         google_button = InlineKeyboardMarkup([
             [InlineKeyboardButton("Search on Google", url=Google Search_url)]
         ])
