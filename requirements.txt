@@ -1,4 +1,6 @@
-pyrogram 
-tgcrypto 
-pymongo 
-rapidfuzz
+pyrogram
+pymongo
+Flask
+python-dotenv
+fuzzywuzzy[speedup]
+
