@@ -151,12 +151,14 @@ async def broadcast_msg(client, message):
     text = message.text.split(" ", 1)[-1] if len(message.text.split(" ", 1)) > 1 else None
     if not text:
         return await message.reply("/broadcast <মেসেজ>")
-    for uid in user_stats:
+    fail_count = 0
+    for uid in list(user_stats):
         try:
             await bot.send_message(uid, text)
         except:
+            fail_count += 1
             continue
-    await message.reply("ব্রডকাস্ট সম্পন্ন হয়েছে।")
+    await message.reply(f"ব্রডকাস্ট সম্পন্ন হয়েছে। ব্যর্থ হয়েছে: {fail_count}")
 
 @bot.on_message(filters.command("delete") & filters.user(admin_ids))
 async def delete_movie(client, message):
@@ -182,6 +184,21 @@ async def clean_common(client, message):
         except:
             continue
     await message.reply(f"{count}টি মেসেজ ডিলিট করা হয়েছে যা '{keyword}' এর সাথে মিলে।")
+
+@bot.on_message(filters.command("delete_all") & filters.user(admin_ids))
+async def delete_all_movies(client, message):
+    confirm = message.text.split(" ", 1)[-1] if len(message.text.split(" ", 1)) > 1 else ""
+    if confirm != "CONFIRM":
+        return await message.reply("সব মেসেজ ডিলিট করতে চাইলে ব্যবহার করুন: /delete_all CONFIRM")
+
+    count = 0
+    async for msg in user_client.search_messages(CHANNEL_USERNAME, limit=1000):
+        try:
+            await user_client.delete_messages(CHANNEL_USERNAME, msg.id)
+            count += 1
+        except:
+            continue
+    await message.reply(f"{count}টি মেসেজ সম্পূর্ণভাবে ডিলিট করা হয়েছে।")
 
 keep_alive()
 user_client.start()
