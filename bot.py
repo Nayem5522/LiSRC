@@ -34,7 +34,7 @@ def keep_alive():
 # Temporary cache to avoid re-searching too often
 cache = {}
 
-@bot.on_message(filters.private & filters.text)
+@bot.on_message((filters.private | filters.group) & filters.text)
 async def movie_search_handler(client, message):
     query = message.text.strip()
     if not query:
@@ -53,11 +53,14 @@ async def movie_search_handler(client, message):
     titles = list(dict.fromkeys([title for title, _ in results]))
     matches = process.extract(query, titles, limit=5)
 
-    buttons = [
-        [InlineKeyboardButton(text=title, callback_data=f"movie_{mid}")]
-        for title, _ in matches
-        for t, mid in results if t == title
-    ]
+    buttons = []
+    used_ids = set()
+    for title, _ in matches:
+        for t, mid in results:
+            if t == title and mid not in used_ids:
+                buttons.append([InlineKeyboardButton(text=title, callback_data=f"movie_{mid}")])
+                used_ids.add(mid)
+                break
 
     await message.reply(
         "আপনি কোনটি খুঁজছেন?", reply_markup=InlineKeyboardMarkup(buttons[:5])
