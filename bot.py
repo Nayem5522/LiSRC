@@ -2,9 +2,10 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask
 from threading import Thread
-from fuzzywuzzy import process
+from fuzzywuzzy import fuzz
 import asyncio
 import os
+import re
 
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
@@ -13,12 +14,9 @@ SESSION_STRING = os.getenv("SESSION_STRING")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME")  # Without @
 DELETE_DELAY = int(os.getenv("DELETE_DELAY", 300))  # seconds
 
-# User client (to search messages)
 user_client = Client(name="user", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING)
-# Bot client (to interact with users)
 bot = Client(name="bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Flask app for web server
 app = Flask(__name__)
 @app.route('/')
 def home():
@@ -31,9 +29,6 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
-# Normalize string for better matching
-import re
-
 def normalize(text):
     return re.sub(r"[^a-zA-Z0-9]", "", text.lower())
 
@@ -44,28 +39,24 @@ async def movie_search_handler(client, message):
         return await message.reply("দয়া করে একটি মুভির নাম লিখুন")
 
     results = []
-    async for msg in user_client.search_messages(CHANNEL_USERNAME, query="", limit=300):
+    async for msg in user_client.search_messages(CHANNEL_USERNAME, query="", limit=1000):
         title = msg.caption or msg.text or "Untitled"
-        if normalize(title) and query in normalize(title):
+        if fuzz.partial_ratio(query, normalize(title)) >= 70:
             results.append((title[:60], msg.id))
 
     if not results:
         return await message.reply("কোনো মুভি পাওয়া যায়নি।")
 
-    # Fuzzy match
-    titles = list(dict.fromkeys([title for title, _ in results]))
-    matches = process.extract(query, titles, limit=5)
+    results = sorted(results, key=lambda x: fuzz.ratio(query, normalize(x[0])), reverse=True)
+    buttons = [
+        [InlineKeyboardButton(text=title, callback_data=f"movie_{mid}")]
+        for title, mid in results[:5]
+    ]
 
-    buttons = []
-    used_ids = set()
-    for title, _ in matches:
-        for t, mid in results:
-            if normalize(t) == normalize(title) and mid not in used_ids:
-                buttons.append([InlineKeyboardButton(text=title, callback_data=f"movie_{mid}")])
-                used_ids.add(mid)
-                break
-
-    await message.reply("আপনি কোনটি খুঁজছেন?", reply_markup=InlineKeyboardMarkup(buttons[:5]))
+    await message.reply(
+        "আপনি কোনটি খুঁজছেন?",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
 
 @bot.on_callback_query(filters.regex("^movie_"))
 async def movie_sender(client, callback_query):
@@ -81,10 +72,9 @@ async def movie_sender(client, callback_query):
         await callback_query.answer("মুভি পাঠানো হয়েছে")
         await asyncio.sleep(DELETE_DELAY)
         await sent.delete()
-    except Exception as e:
+    except Exception:
         await callback_query.answer("মুভি পাঠানো যায়নি", show_alert=True)
 
-# Start everything
 keep_alive()
 user_client.start()
 bot.run()
