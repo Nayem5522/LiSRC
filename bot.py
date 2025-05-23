@@ -268,10 +268,8 @@ async def search_movies(_, msg: Message):
         return
 
     # If no results or suggestions, inform user and notify admin
-    await loading.delete()
-    Google Search_url = "https://www.google.com/search?q=" + urllib.parse.quote(raw_query) # Corrected variable name
-    google_button = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Search on Google", url=Google Search_url)] # Corrected variable name
+    Google Search_url = "https://www.google.com/search?q=" + urllib.parse.quote(raw_query)
+ # Corrected variable name
     ])
     alert = await msg.reply(
         "কোনও ফলাফল পাওয়া যায়নি। অ্যাডমিনকে জানানো হয়েছে। নিচের বাটনে ক্লিক করে গুগলে সার্চ করুন।",
