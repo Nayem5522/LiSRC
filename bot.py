@@ -230,7 +230,7 @@ async def search(_, msg):
     else:
         # If no results found with text search, proceed to the admin notification and Google search
         await loading.delete()
-        Google Search_url = "https://www.google.com/search?q=" + urllib.parse.quote(raw_query)
+        Google_Search_url = "https://www.google.com/search?q=" + urllib.parse.quote(raw_query)
         google_button = InlineKeyboardMarkup([
             [InlineKeyboardButton("Search on Google", url=Google Search_url)]
         ])
