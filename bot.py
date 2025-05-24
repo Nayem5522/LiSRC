@@ -8,7 +8,6 @@ import re
 from datetime import datetime
 import asyncio
 import urllib.parse
-from fuzzywuzzy import process # Added for fuzzy matching
 
 # Configs
 API_ID = int(os.getenv("API_ID"))
@@ -19,8 +18,7 @@ RESULTS_COUNT = int(os.getenv("RESULTS_COUNT", 10))
 ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(",")))
 DATABASE_URL = os.getenv("DATABASE_URL")
 UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL", "https://t.me/CTGMovieOfficial")
-START_PIC = os.getenv("START_PIC", "https://i.ibb.co/prnGXMr/photo-2025-05-16-05-15-45-7504908428624527364.jpg")
-FUZZY_MATCH_THRESHOLD = int(os.getenv("FUZZY_MATCH_THRESHOLD", 80)) # New config for fuzzy matching threshold
+START_PIC = os.getenv("START_PIC", "https://i.ibb.co/prnGXMr3/photo-2025-05-16-05-15-45-7504908428624527364.jpg")
 
 app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -33,10 +31,13 @@ stats_col = db["stats"]
 users_col = db["users"]
 settings_col = db["settings"]
 
-# Index
-movies_col.create_index([("title", ASCENDING)])
+# --- ADVANCED SEARCH: Create Text Index ---
+# This index allows for efficient text searching across the 'title' field.
+# You can add other fields here if you want to search across them too (e.g., "language", "year").
+movies_col.create_index([("title", "text")])
 movies_col.create_index("message_id")
 movies_col.create_index("language")
+# --- END ADVANCED SEARCH ---
 
 # Flask
 flask_app = Flask(__name__)
@@ -47,18 +48,8 @@ Thread(target=lambda: flask_app.run(host="0.0.0.0", port=8080)).start()
 
 # Helpers
 def clean_text(text):
-    # This function is now only for basic cleaning, more specific cleaning for query
-    return re.sub(r'[^a-zA-Z0-9\s]', '', text).lower()
-
-def clean_query(query):
-    # Remove common extra words and symbols from the search query
-    query = query.lower()
-    query = re.sub(r'\b(movie|full|hd|online|free|download|watch)\b', '', query) # Remove common keywords
-    query = re.sub(r'\.\w+', '', query) # Remove file extensions like .com, .mkv, .mp4
-    query = re.sub(r'\d{4}', '', query) # Remove years (e.g., 2023) - if you want to ignore years in search
-    query = re.sub(r'[^\w\s]', '', query) # Remove special characters
-    query = re.sub(r'\s+', ' ', query).strip() # Replace multiple spaces with a single space
-    return query
+    # This function is less critical for MongoDB text search but can be used for exact matching if needed.
+    return re.sub(r'[^a-zA-Z0-9\s]', '', text).lower() # Allowed spaces for multi-word titles
 
 def extract_year(text):
     match = re.search(r"(19|20)\d{2}", text)
@@ -66,14 +57,15 @@ def extract_year(text):
 
 def extract_language(text):
     langs = ["Bengali", "Hindi", "English"]
-    return next((lang for lang in langs if lang.lower() in text.lower()), "Unknown")
+    # Check for full word matches for better accuracy
+    return next((lang for lang in langs if re.search(r'\b' + lang.lower() + r'\b', text.lower())), "Unknown")
 
 async def delete_message_later(chat_id, message_id, delay=600):
     await asyncio.sleep(delay)
     try:
         await app.delete_messages(chat_id, message_id)
     except Exception as e:
-        print(f"Error deleting message {message_id} in chat {chat_id}: {e}")
+        print(f"Error deleting message: {e}") # Log the error for debugging
 
 @app.on_message(filters.chat(CHANNEL_ID))
 async def save_post(_, msg: Message):
@@ -91,6 +83,7 @@ async def save_post(_, msg: Message):
 
     setting = settings_col.find_one({"key": "global_notify"})
     if setting and setting.get("value"):
+        # Fetch only users who want notifications
         for user in users_col.find({"notify": {"$ne": False}}):
             try:
                 await app.send_message(
@@ -98,7 +91,7 @@ async def save_post(_, msg: Message):
                     f"নতুন মুভি আপলোড হয়েছে:\n{text.splitlines()[0][:100]}\nএখনই সার্চ করে দেখুন!"
                 )
             except Exception as e:
-                print(f"Error sending notification to user {user['_id']}: {e}")
+                print(f"Error sending notification to user {user['_id']}: {e}") # Log the error
 
 @app.on_message(filters.command("start"))
 async def start(_, msg: Message):
@@ -130,13 +123,13 @@ async def broadcast(_, msg):
     if len(msg.command) < 2:
         return await msg.reply("Usage: /broadcast Your message here")
     count = 0
+    # Add a filter to users_col.find() if you want to broadcast only to active users
     for user in users_col.find():
         try:
             await app.send_message(user["_id"], msg.text.split(None, 1)[1])
             count += 1
         except Exception as e:
-            print(f"Error broadcasting to user {user['_id']}: {e}")
-            pass
+            print(f"Error broadcasting to user {user.get('_id', 'N/A')}: {e}")
     await msg.reply(f"Broadcast sent to {count} users.")
 
 @app.on_message(filters.command("stats") & filters.user(ADMIN_IDS))
@@ -158,13 +151,19 @@ async def delete_movie(_, msg):
             await msg.reply(f"✅ মুভি (ID: {movie_id}) ডিলিট করা হয়েছে।")
         else:
             await msg.reply("❌ এই ID-এর কোনো মুভি পাওয়া যায়নি।")
+    except ValueError:
+        await msg.reply("⚠️ Movie ID একটি সংখ্যা হওয়া প্রয়োজন।")
     except Exception as e:
-        await msg.reply(f"⚠️ Movie ID একটি সংখ্যা হওয়া প্রয়োজন। ত্রুটি: {e}")
+        await msg.reply(f"⚠️ Error deleting movie: {e}")
 
 @app.on_message(filters.command("delete_all_movies") & filters.user(ADMIN_IDS))
 async def delete_all_movies(_, msg):
-    result = movies_col.delete_many({})
-    await msg.reply(f"🗑️ মোট {result.deleted_count} টি মুভি ডিলিট করা হয়েছে।")
+    # Added confirmation step for this destructive command
+    confirm_btn = InlineKeyboardMarkup([
+        [InlineKeyboardButton("হ্যাঁ, ডিলিট করুন", callback_data="confirm_delete_all_movies")],
+        [InlineKeyboardButton("না, বাতিল করুন", callback_data="cancel_delete_all_movies")]
+    ])
+    await msg.reply("আপনি কি নিশ্চিত যে আপনি সমস্ত মুভি ডিলিট করতে চান? এই কাজটি পূর্বাবস্থায় ফেরানো যাবে না।", reply_markup=confirm_btn)
 
 @app.on_message(filters.command("notify") & filters.user(ADMIN_IDS))
 async def notify_command(_, msg: Message):
@@ -179,10 +178,10 @@ async def notify_command(_, msg: Message):
     status = "enabled" if new_value else "disabled"
     await msg.reply(f"✅ Global notifications {status}!")
 
-@app.on_message(filters.text)
+# --- ADVANCED SEARCH: Main Search Handler ---
+@app.on_message(filters.text & filters.private & ~filters.command(["start", "feedback", "broadcast", "stats", "delete_movie", "delete_all_movies", "notify"]))
 async def search(_, msg):
     raw_query = msg.text.strip()
-    processed_query = clean_query(raw_query) # Cleaned query for fuzzy matching
     users_col.update_one(
         {"_id": msg.from_user.id},
         {"$set": {"last_search": datetime.utcnow()}},
@@ -190,128 +189,143 @@ async def search(_, msg):
     )
 
     loading = await msg.reply("🔎 লোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
-    
-    # Get all movie titles for fuzzy matching
-    all_movie_titles = [m.get("title", "") for m in movies_col.find({}, {"title": 1})]
-    
-    # Perform fuzzy matching
-    # results format: [('Movie Title 1', score), ('Movie Title 2', score), ...]
-    fuzzy_results = process.extract(processed_query, all_movie_titles, limit=RESULTS_COUNT * 2) # Get more results to filter later
 
-    # Filter out results below the threshold and get unique movie message_ids
-    matched_movie_ids = []
-    seen_movie_ids = set() # To store unique message_ids
-    
-    for title, score in fuzzy_results:
-        if score >= FUZZY_MATCH_THRESHOLD:
-            # Find the actual movie document using its title
-            movie_doc = movies_col.find_one({"title": title}, {"message_id": 1})
-            if movie_doc and movie_doc["message_id"] not in seen_movie_ids:
-                matched_movie_ids.append(movie_doc["message_id"])
-                seen_movie_ids.add(movie_doc["message_id"])
-        
-        if len(matched_movie_ids) >= RESULTS_COUNT: # Stop if we have enough
-            break
+    # MongoDB Text Search: Finds documents where the 'title' field contains the search term.
+    # It also returns a 'textScore' for relevance, which we use for sorting.
+    search_results = list(movies_col.find(
+        {"$text": {"$search": raw_query}},
+        {"score": {"$meta": "textScore"}, "title": 1, "message_id": 1, "language": 1} # Include necessary fields
+    ).sort([("score", {"$meta": "textScore"})]).limit(RESULTS_COUNT))
 
-    await loading.delete()
+    if search_results:
+        await loading.delete()
+        buttons = []
+        for m in search_results:
+            title = m.get("title", "")
+            # Truncate title if too long for inline button
+            if len(title) > 40:
+                title = title[:37] + "..."
+            buttons.append([InlineKeyboardButton(title, callback_data=f"movie_{m['message_id']}")])
 
-    if matched_movie_ids:
-        # If there are direct or fuzzy matches, show them
-        for movie_id in matched_movie_ids[:RESULTS_COUNT]:
-            try:
-                fwd = await app.forward_messages(msg.chat.id, CHANNEL_ID, movie_id)
-                await msg.reply("⚠️ এই মুভিটি 10 মিনিট পর অটো ডিলিট হয়ে যাবে।")
-                asyncio.create_task(delete_message_later(msg.chat.id, fwd.id))
-                await asyncio.sleep(0.7) # Small delay to avoid flood waits
-            except Exception as e:
-                print(f"Error forwarding movie {movie_id}: {e}")
-                pass
+        # Language filter buttons - useful after an initial search
+        lang_buttons = [
+            InlineKeyboardButton("Bengali", callback_data=f"lang_Bengali_{urllib.parse.quote(raw_query)}"),
+            InlineKeyboardButton("Hindi", callback_data=f"lang_Hindi_{urllib.parse.quote(raw_query)}"),
+            InlineKeyboardButton("English", callback_data=f"lang_English_{urllib.parse.quote(raw_query)}")
+        ]
+        buttons.append(lang_buttons)
+
+        # Year filter buttons - dynamically generate for recent years
+        current_year = datetime.now().year
+        year_buttons_row = []
+        for year_offset in range(5): # Last 5 years
+            year = current_year - year_offset
+            year_buttons_row.append(InlineKeyboardButton(str(year), callback_data=f"year_{year}_{urllib.parse.quote(raw_query)}"))
+        buttons.append(year_buttons_row)
+
+
+        m = await msg.reply("আপনার মুভির নাম মিলতে পারে, নিচের থেকে সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(buttons))
+        asyncio.create_task(delete_message_later(m.chat.id, m.id))
         return
     else:
-        # No direct or fuzzy match, suggest language-based search
-        lang_buttons = [
-            InlineKeyboardButton("Bengali", callback_data=f"lang_Bengali_{processed_query}"),
-            InlineKeyboardButton("Hindi", callback_data=f"lang_Hindi_{processed_query}"),
-            InlineKeyboardButton("English", callback_data=f"lang_English_{processed_query}")
-        ]
-        
-        suggestion_text = "কোনও ফলাফল পাওয়া যায়নি। আপনি কি এই মুভিটি অন্য ভাষায় খুঁজতে চান?"
-        suggestion_markup = InlineKeyboardMarkup([lang_buttons]) # No Google Search button
-        
+        # If no results found with text search, proceed to the admin notification and Google search
+        await loading.delete()
+        Google Search_url = "https://www.google.com/search?q=" + urllib.parse.quote(raw_query)
+        google_button = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Search on Google", url=Google Search_url)]
+        ])
         alert = await msg.reply(
-            suggestion_text,
-            reply_markup=suggestion_markup
+            "কোনও ফলাফল পাওয়া যায়নি। অ্যাডমিনকে জানানো হয়েছে। নিচের বাটনে ক্লিক করে গুগলে সার্চ করুন।",
+            reply_markup=google_button
         )
         asyncio.create_task(delete_message_later(alert.chat.id, alert.id))
 
-        # Admin notification remains the same
         btn = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("✅ মুভি আছে", callback_data=f"has_{msg.chat.id}_{msg.id}_{raw_query}"),
-                InlineKeyboardButton("❌ নেই", callback_data=f"no_{msg.chat.id}_{msg.id}_{raw_query}")
+                InlineKeyboardButton("✅ মুভি আছে", callback_data=f"has_{msg.chat.id}_{msg.id}_{urllib.parse.quote(raw_query)}"),
+                InlineKeyboardButton("❌ নেই", callback_data=f"no_{msg.chat.id}_{msg.id}_{urllib.parse.quote(raw_query)}")
             ],
             [
-                InlineKeyboardButton("⏳ আসবে", callback_data=f"soon_{msg.chat.id}_{msg.id}_{raw_query}"),
-                InlineKeyboardButton("✏️ ভুল নাম", callback_data=f"wrong_{msg.chat.id}_{msg.id}_{raw_query}")
+                InlineKeyboardButton("⏳ আসবে", callback_data=f"soon_{msg.chat.id}_{msg.id}_{urllib.parse.quote(raw_query)}"),
+                InlineKeyboardButton("✏️ ভুল নাম", callback_data=f"wrong_{msg.chat.id}_{msg.id}_{urllib.parse.quote(raw_query)}")
             ]
         ])
         for admin_id in ADMIN_IDS:
-            try:
-                await app.send_message(
-                    admin_id,
-                    f"❗ ইউজার `{msg.from_user.id}` `{msg.from_user.first_name}` খুঁজেছে: **{raw_query}**\nফলাফল পাওয়া যায়নি। নিচে বাটন থেকে উত্তর দিন।",
-                    reply_markup=btn
-                )
-            except Exception as e:
-                print(f"Error sending admin notification to {admin_id}: {e}")
+            await app.send_message(
+                admin_id,
+                f"❗ ইউজার `{msg.from_user.id}` `{msg.from_user.first_name}` খুঁজেছে: **{raw_query}**\nফলাফল পাওয়া যায়নি। নিচে বাটন থেকে উত্তর দিন।",
+                reply_markup=btn
+            )
 
-
+# --- ADVANCED SEARCH: Callback Query Handlers ---
 @app.on_callback_query()
 async def callback_handler(_, cq: CallbackQuery):
     data = cq.data
 
     if data.startswith("movie_"):
         mid = int(data.split("_")[1])
-        try:
-            fwd = await app.forward_messages(cq.message.chat.id, CHANNEL_ID, mid)
-            await cq.message.reply("⚠️ এই মুভিটি 10 মিনিট পর অটো ডিলিট হয়ে যাবে।")
-            asyncio.create_task(delete_message_later(cq.message.chat.id, fwd.id))
-            await cq.answer("মুভি পাঠানো হয়েছে।")
-        except Exception as e:
-            await cq.answer("মুভিটি ফরওয়ার্ড করতে সমস্যা হয়েছে।", show_alert=True)
-            print(f"Error forwarding movie from callback: {e}")
+        fwd = await app.forward_messages(cq.message.chat.id, CHANNEL_ID, mid)
+        await cq.message.reply("⚠️ এই মুভিটি 10 মিনিট পর অটো ডিলিট হয়ে যাবে।")
+        asyncio.create_task(delete_message_later(cq.message.chat.id, fwd.id))
+        await cq.answer("মুভি পাঠানো হয়েছে।", show_alert=False) # show_alert=False for non-intrusive feedback
 
     elif data.startswith("lang_"):
-        _, lang, query = data.split("_", 2)
-        # Search for movies in the specified language, using fuzzy matching if the query is not empty
-        
-        # Get all movie titles for fuzzy matching within the selected language
-        lang_movie_titles = [m.get("title", "") for m in movies_col.find({"language": lang}, {"title": 1})]
-        
-        if query: # If there's a specific query from the initial search
-            fuzzy_lang_results = process.extract(query, lang_movie_titles, limit=RESULTS_COUNT)
-            matched_movies = []
-            seen_titles = set()
-            for title, score in fuzzy_lang_results:
-                if score >= FUZZY_MATCH_THRESHOLD and title not in seen_titles:
-                    movie_doc = movies_col.find_one({"title": title, "language": lang}, {"message_id": 1, "title": 1})
-                    if movie_doc:
-                        matched_movies.append(movie_doc)
-                        seen_titles.add(title)
-        else: # If no specific query, just list movies in that language (or top ones)
-            matched_movies = list(movies_col.find({"language": lang}, {"message_id": 1, "title": 1}).limit(RESULTS_COUNT))
+        _, lang, raw_query = data.split("_", 2)
+        # Decode the query from URL encoding
+        decoded_query = urllib.parse.unquote(raw_query)
 
-        if matched_movies:
+        # Filter by language and use text search for the query
+        lang_movies = list(movies_col.find(
+            {"language": lang, "$text": {"$search": decoded_query}},
+            {"score": {"$meta": "textScore"}, "title": 1, "message_id": 1}
+        ).sort([("score", {"$meta": "textScore"})]).limit(RESULTS_COUNT))
+
+        if lang_movies:
             buttons = [
                 [InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")]
-                for m in matched_movies
+                for m in lang_movies
             ]
             await cq.message.edit_text(
                 f"ফলাফল ({lang}) - নিচের থেকে সিলেক্ট করুন:",
                 reply_markup=InlineKeyboardMarkup(buttons)
             )
         else:
-            await cq.answer(f"এই ভাষায় '{query}' এর জন্য কিছু পাওয়া যায়নি।", show_alert=True)
+            await cq.answer(f"এই ({lang}) ভাষায় '{decoded_query}' এর জন্য কিছু পাওয়া যায়নি।", show_alert=True)
+        await cq.answer() # Acknowledge the callback
+
+    elif data.startswith("year_"):
+        _, year, raw_query = data.split("_", 2)
+        decoded_query = urllib.parse.unquote(raw_query)
+
+        # Filter by year and use text search for the query
+        year_movies = list(movies_col.find(
+            {"year": year, "$text": {"$search": decoded_query}},
+            {"score": {"$meta": "textScore"}, "title": 1, "message_id": 1}
+        ).sort([("score", {"$meta": "textScore"})]).limit(RESULTS_COUNT))
+
+        if year_movies:
+            buttons = [
+                [InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")]
+                for m in year_movies
+            ]
+            await cq.message.edit_text(
+                f"ফলাফল ({year} সাল) - নিচের থেকে সিলেক্ট করুন:",
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+        else:
+            await cq.answer(f"এই ({year}) সালে '{decoded_query}' এর জন্য কিছু পাওয়া যায়নি।", show_alert=True)
+        await cq.answer()
+
+    elif data == "confirm_delete_all_movies":
+        if cq.from_user.id in ADMIN_IDS: # Ensure only admins can confirm
+            result = movies_col.delete_many({})
+            await cq.message.edit_text(f"🗑️ মোট {result.deleted_count} টি মুভি ডিলিট করা হয়েছে।")
+        else:
+            await cq.answer("আপনার এই অনুমতি নেই।", show_alert=True)
+        await cq.answer()
+
+    elif data == "cancel_delete_all_movies":
+        await cq.message.edit_text("❌ সমস্ত মুভি ডিলিট করার অনুরোধ বাতিল করা হয়েছে।")
         await cq.answer()
 
     elif "_" in data:
@@ -319,22 +333,21 @@ async def callback_handler(_, cq: CallbackQuery):
         if len(parts) == 4:
             action, uid, mid, raw_query = parts
             uid = int(uid)
+            # Decode the raw_query from URL encoding for display
+            decoded_query = urllib.parse.unquote(raw_query)
             responses = {
-                "has": f"✅ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** মুভিটি ডাটাবেজে আছে। সঠিক নাম লিখে আবার চেষ্টা করুন।",
-                "no": f"❌ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** মুভিটি ডাটাবেজে নেই।",
-                "soon": f"⏳ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** মুভিটি শীঘ্রই আসবে।",
-                "wrong": f"✏️ @{cq.from_user.username or cq.from_user.first_name} বলছেন যে আপনি ভুল নাম লিখেছেন: **{raw_query}**।"
+                "has": f"✅ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{decoded_query}** মুভিটি ডাটাবেজে আছে। সঠিক নাম লিখে আবার চেষ্টা করুন।",
+                "no": f"❌ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{decoded_query}** মুভিটি ডাটাবেজে নেই।",
+                "soon": f"⏳ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{decoded_query}** মুভিটি শীঘ্রই আসবে।",
+                "wrong": f"✏️ @{cq.from_user.username or cq.from_user.first_name} বলছেন যে আপনি ভুল নাম লিখেছেন: **{decoded_query}**।"
             }
             if action in responses:
-                try:
-                    m = await app.send_message(uid, responses[action])
-                    asyncio.create_task(delete_message_later(m.chat.id, m.id))
-                    await cq.answer("অ্যাডমিনের পক্ষ থেকে উত্তর পাঠানো হয়েছে।")
-                except Exception as e:
-                    await cq.answer("ইউজারকে মেসেজ পাঠাতে সমস্যা হয়েছে।", show_alert=True)
-                    print(f"Error sending admin response to user {uid}: {e}")
+                m = await app.send_message(uid, responses[action])
+                asyncio.create_task(delete_message_later(m.chat.id, m.id))
+                await cq.answer("অ্যাডমিনের পক্ষ থেকে উত্তর পাঠানো হয়েছে।")
             else:
                 await cq.answer()
+# --- END ADVANCED SEARCH ---
 
 if __name__ == "__main__":
     print("Bot is starting...")
