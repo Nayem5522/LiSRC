@@ -54,7 +54,10 @@ async def delete_message_later(chat_id, message_id, delay=600):
 async def notify_subscribers(movie_title):
     subscribers = subscribers_col.find()
     for subscriber in subscribers:
-        await app.send_message(subscriber["user_id"], f"🎬 নতুন মুভি পোস্ট হয়েছে: {movie_title}\n\n{UPDATE_CHANNEL}")
+        try:
+            await app.send_message(subscriber["user_id"], f"🎬 নতুন মুভি পোস্ট হয়েছে: {movie_title}\n\n{UPDATE_CHANNEL}")
+        except:
+            pass
 
 # Auto save new movie when posted in channel
 @app.on_message(filters.channel & filters.text)
@@ -70,8 +73,12 @@ async def save_movie(client, message):
     movies_col.insert_one(movie_data)
     await notify_subscribers(movie_title)
 
-# Search Handler with Fuzzy Matching
-@app.on_message(filters.text & (filters.private | filters.group))
+# ✅ Fixed Search Handler
+@app.on_message(
+    filters.text 
+    & ~filters.command(["start", "subscribe", "unsubscribe", "stats"]) 
+    & (filters.private | filters.group)
+)
 async def search_handler(client, message):
     query_raw = message.text.strip()
     query_clean = clean_text(query_raw)
