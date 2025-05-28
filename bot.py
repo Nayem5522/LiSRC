@@ -50,6 +50,13 @@ Thread(target=lambda: flask_app.run(host="0.0.0.0", port=8080)).start()
 def clean_text(text):
     return re.sub(r'[^a-zA-Z0-9]', '', text.lower())
 
+def extract_language(text):
+    langs = ["Hindi", "Bengali", "English", "Tamil", "Telugu", "Malayalam"]
+    for lang in langs:
+        if lang.lower() in text.lower():
+            return lang
+    return "Unknown"
+
 async def delete_message_later(chat_id, message_id, delay=600):
     await asyncio.sleep(delay)
     try:
@@ -68,18 +75,21 @@ async def notify_subscribers(movie_title):
 @app.on_message(filters.channel)
 async def save_movie(client, message):
     try:
-        if not message.text:
+        text = message.caption or message.text
+        if not text:
             return
-        movie_title = message.text.splitlines()[0]
+        first_line = text.splitlines()[0].strip()
+        language = extract_language(text)
         movie_data = {
-            "title": movie_title.strip(),
+            "title": first_line,
             "message_id": message.id,
-            "language": "Unknown",
+            "language": language,
             "posted_at": datetime.utcnow()
         }
-        movies_col.insert_one(movie_data)
-        logger.info(f"✅ Saved movie: {movie_title}")
-        await notify_subscribers(movie_title)
+        if not movies_col.find_one({"message_id": message.id}):
+            movies_col.insert_one(movie_data)
+            logger.info(f"✅ Saved movie: {first_line}")
+            await notify_subscribers(first_line)
     except Exception as e:
         logger.error(f"❌ Movie save failed: {e}")
 
@@ -115,7 +125,7 @@ async def search_handler(client, message):
         await loading.delete()
         buttons = [[InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")] for m in filtered]
 
-        short_query = query_raw[:30]  # ✅ Avoid BUTTON_DATA_INVALID
+        short_query = clean_text(query_raw[:20])
         buttons.append([
             InlineKeyboardButton("Bengali", callback_data=f"lang_Bengali_{short_query}"),
             InlineKeyboardButton("Hindi", callback_data=f"lang_Hindi_{short_query}"),
