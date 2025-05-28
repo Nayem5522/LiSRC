@@ -27,6 +27,7 @@ mongo = MongoClient(DATABASE_URL)
 db = mongo["movie_bot"]
 movies_col = db["movies"]
 users_col = db["users"]
+subscribers_col = db["subscribers"]
 
 movies_col.create_index([("title", ASCENDING)])
 movies_col.create_index("message_id")
@@ -49,6 +50,30 @@ async def delete_message_later(chat_id, message_id, delay=600):
         await app.delete_messages(chat_id, message_id)
     except:
         pass
+
+async def notify_subscribers(movie_title):
+    subscribers = subscribers_col.find()
+    for subscriber in subscribers:
+        await app.send_message(subscriber["user_id"], f"🎬 নতুন মুভি পোস্ট হয়েছে: {movie_title}\n\n{UPDATE_CHANNEL}")
+
+# Auto save new movie when posted in channel
+@app.on_message(filters.channel & filters.text)
+async def save_movie(client, message):
+    movie_title = message.text.splitlines()[0]  # First line is the movie title
+    movie_language = "Unknown"  # You can implement language detection or make it dynamic later
+
+    movie_data = {
+        "title": movie_title,
+        "message_id": message.message_id,
+        "language": movie_language,
+        "posted_at": datetime.utcnow(),
+    }
+    
+    # Save to MongoDB
+    movies_col.insert_one(movie_data)
+
+    # Notify all subscribers
+    await notify_subscribers(movie_title)
 
 # Search Handler with Fuzzy Matching
 @app.on_message(filters.private & filters.text)
@@ -144,6 +169,36 @@ async def callback_handler(client, callback_query):
             )
         else:
             await callback_query.answer("দুঃখিত, এই ভাষায় কোনো মিল পাওয়া যায়নি।", show_alert=True)
+
+# Subscription System
+@app.on_message(filters.command("subscribe") & filters.private)
+async def subscribe(client, message):
+    user_id = message.from_user.id
+    if not subscribers_col.find_one({"user_id": user_id}):
+        subscribers_col.insert_one({"user_id": user_id})
+        await message.reply("আপনি সফলভাবে সাবস্ক্রাইব করেছেন। এখন থেকে নতুন মুভি পোস্ট হলে আপনাকে নোটিফাই করা হবে।")
+    else:
+        await message.reply("আপনি ইতিমধ্যে সাবস্ক্রাইব করেছেন।")
+
+@app.on_message(filters.command("unsubscribe") & filters.private)
+async def unsubscribe(client, message):
+    user_id = message.from_user.id
+    subscribers_col.delete_one({"user_id": user_id})
+    await message.reply("আপনি সফলভাবে আনসাবস্ক্রাইব করেছেন। নতুন মুভি নোটিফিকেশন আর পাবেন না।")
+
+# Stats Command
+@app.on_message(filters.command("stats") & filters.private)
+async def stats(client, message):
+    user_count = users_col.count_documents({})
+    subscriber_count = subscribers_col.count_documents({})
+    movie_count = movies_col.count_documents({})
+    
+    stats_message = (
+        f"সর্বমোট ইউজার: {user_count}\n"
+        f"সাবস্ক্রাইবার: {subscriber_count}\n"
+        f"মুভির সংখ্যা: {movie_count}"
+    )
+    await message.reply(stats_message)
 
 # Start command
 @app.on_message(filters.command("start") & filters.private)
