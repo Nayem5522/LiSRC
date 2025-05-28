@@ -59,20 +59,15 @@ async def notify_subscribers(movie_title):
 # Auto save new movie when posted in channel
 @app.on_message(filters.channel & filters.text)
 async def save_movie(client, message):
-    movie_title = message.text.splitlines()[0]  # First line is the movie title
-    movie_language = "Unknown"  # You can implement language detection or make it dynamic later
-
+    movie_title = message.text.splitlines()[0]
+    movie_language = "Unknown"
     movie_data = {
         "title": movie_title,
         "message_id": message.message_id,
         "language": movie_language,
         "posted_at": datetime.utcnow(),
     }
-    
-    # Save to MongoDB
     movies_col.insert_one(movie_data)
-
-    # Notify all subscribers
     await notify_subscribers(movie_title)
 
 # Search Handler with Fuzzy Matching
@@ -80,8 +75,7 @@ async def save_movie(client, message):
 async def search_handler(client, message):
     query_raw = message.text.strip()
     query_clean = clean_text(query_raw)
-    
-    # Log or update user's last search
+
     users_col.update_one(
         {"_id": message.from_user.id},
         {"$set": {"last_search": datetime.utcnow()}},
@@ -89,10 +83,9 @@ async def search_handler(client, message):
     )
 
     loading_msg = await message.reply("🔎 লোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
-    
+
     all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
-    
-    # 1. Check exact match
+
     exact_matches = [m for m in all_movies if clean_text(m.get("title", "")) == query_clean]
     if exact_matches:
         await loading_msg.delete()
@@ -102,106 +95,82 @@ async def search_handler(client, message):
             asyncio.create_task(delete_message_later(message.chat.id, fwd_msg.id))
             await asyncio.sleep(0.7)
         return
-    
-    # 2. Fuzzy matching suggestions
+
     choices = {m["title"]: m for m in all_movies}
     fuzzy_results = process.extract(query_raw, choices.keys(), scorer=fuzz.partial_ratio, limit=RESULTS_COUNT)
-    
-    # Filter results above threshold (70)
     filtered_suggestions = [choices[title] for title, score, _ in fuzzy_results if score >= 70]
 
     if filtered_suggestions:
         await loading_msg.delete()
-        buttons = [
-            [InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")] for m in filtered_suggestions
-        ]
-        # Add language filter buttons
+        buttons = [[InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")] for m in filtered_suggestions]
         lang_buttons = [
             InlineKeyboardButton("Bengali", callback_data=f"lang_Bengali_{query_raw}"),
             InlineKeyboardButton("Hindi", callback_data=f"lang_Hindi_{query_raw}"),
             InlineKeyboardButton("English", callback_data=f"lang_English_{query_raw}")
         ]
         buttons.append(lang_buttons)
-        
-        await message.reply(
-            "আপনার মুভির নামের সাথে মিল পাওয়া গেছে, নিচের থেকে সিলেক্ট করুন:",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+
+        await message.reply("আপনার মুভির নামের সাথে মিল পাওয়া গেছে, নিচের থেকে সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(buttons))
         return
-    
+
     await loading_msg.edit("দুঃখিত, কোনো ফলাফল পাওয়া যায়নি। দয়া করে সঠিক নাম লিখুন অথবা পরে আবার চেষ্টা করুন।")
 
-# Callback handler for buttons
+# Callback Handler
 @app.on_callback_query()
 async def callback_handler(client, callback_query):
     data = callback_query.data
-
     if data.startswith("movie_"):
         msg_id = int(data.split("_")[1])
-        # Forward the movie message from channel to user
         fwd_msg = await app.forward_messages(callback_query.message.chat.id, CHANNEL_ID, msg_id)
         await callback_query.answer("মুভি পাঠানো হয়েছে!")
         asyncio.create_task(delete_message_later(callback_query.message.chat.id, fwd_msg.id))
-
     elif data.startswith("lang_"):
         parts = data.split("_")
         lang = parts[1]
         query = "_".join(parts[2:])
-        
-        # Filter movies by language & query
-        lang_movies = list(movies_col.find(
-            {"language": lang},
-            {"title": 1, "message_id": 1}
-        ))
-
-        # Fuzzy match within filtered language movies
+        lang_movies = list(movies_col.find({"language": lang}, {"title": 1, "message_id": 1}))
         choices = {m["title"]: m for m in lang_movies}
         fuzzy_results = process.extract(query, choices.keys(), scorer=fuzz.partial_ratio, limit=RESULTS_COUNT)
         filtered = [choices[title] for title, score, _ in fuzzy_results if score >= 70]
-
         if filtered:
-            buttons = [
-                [InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")] for m in filtered
-            ]
-            await callback_query.message.edit_text(
-                f"ভাষা: {lang} এর জন্য ফলাফল:",
-                reply_markup=InlineKeyboardMarkup(buttons)
-            )
+            buttons = [[InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")] for m in filtered]
+            await callback_query.message.edit_text(f"ভাষা: {lang} এর জন্য ফলাফল:", reply_markup=InlineKeyboardMarkup(buttons))
         else:
             await callback_query.answer("দুঃখিত, এই ভাষায় কোনো মিল পাওয়া যায়নি।", show_alert=True)
 
-# Subscription System
-@app.on_message(filters.command("subscribe") & filters.private)
+# Subscribe Command
+@app.on_message(filters.command("subscribe") & (filters.private | filters.group))
 async def subscribe(client, message):
     user_id = message.from_user.id
     if not subscribers_col.find_one({"user_id": user_id}):
         subscribers_col.insert_one({"user_id": user_id})
-        await message.reply("আপনি সফলভাবে সাবস্ক্রাইব করেছেন। এখন থেকে নতুন মুভি পোস্ট হলে আপনাকে নোটিফাই করা হবে।")
+        await message.reply("✅ আপনি সফলভাবে সাবস্ক্রাইব করেছেন। এখন থেকে নতুন মুভি পোস্ট হলে আপনাকে নোটিফাই করা হবে।")
     else:
-        await message.reply("আপনি ইতিমধ্যে সাবস্ক্রাইব করেছেন।")
+        await message.reply("ℹ️ আপনি ইতিমধ্যে সাবস্ক্রাইব করেছেন।")
 
-@app.on_message(filters.command("unsubscribe") & filters.private)
+# Unsubscribe Command
+@app.on_message(filters.command("unsubscribe") & (filters.private | filters.group))
 async def unsubscribe(client, message):
     user_id = message.from_user.id
     subscribers_col.delete_one({"user_id": user_id})
-    await message.reply("আপনি সফলভাবে আনসাবস্ক্রাইব করেছেন। নতুন মুভি নোটিফিকেশন আর পাবেন না।")
+    await message.reply("❌ আপনি সফলভাবে আনসাবস্ক্রাইব করেছেন। এখন থেকে নতুন মুভির নোটিফিকেশন আর পাবেন না।")
 
 # Stats Command
-@app.on_message(filters.command("stats") & filters.private)
+@app.on_message(filters.command("stats") & (filters.private | filters.group))
 async def stats(client, message):
     user_count = users_col.count_documents({})
     subscriber_count = subscribers_col.count_documents({})
     movie_count = movies_col.count_documents({})
-    
     stats_message = (
-        f"সর্বমোট ইউজার: {user_count}\n"
-        f"সাবস্ক্রাইবার: {subscriber_count}\n"
-        f"মুভির সংখ্যা: {movie_count}"
+        f"📊 বট পরিসংখ্যান:\n"
+        f"👤 ইউজার সংখ্যা: {user_count}\n"
+        f"🔔 সাবস্ক্রাইবার: {subscriber_count}\n"
+        f"🎬 মোট মুভি: {movie_count}"
     )
     await message.reply(stats_message)
 
-# Start command
-@app.on_message(filters.command("start") & filters.private)
+# Start Command
+@app.on_message(filters.command("start") & (filters.private | filters.group))
 async def start_command(client, message):
     text = (
         f"হ্যালো {message.from_user.first_name}!\n"
