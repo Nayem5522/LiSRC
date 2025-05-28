@@ -1,5 +1,3 @@
-# ✅ Final Movie Bot Code with All Features
-
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pymongo import MongoClient, ASCENDING
@@ -35,6 +33,7 @@ db = mongo["movie_bot"]
 movies_col = db["movies"]
 users_col = db["users"]
 subscribers_col = db["subscribers"]
+requests_col = db["requests"]
 
 # Indexes
 movies_col.create_index([("title", ASCENDING)])
@@ -86,16 +85,16 @@ async def save_movie(client, message):
         logger.error(f"❌ Movie save failed: {e}")
 
 # ✅ Search Handler
-@app.on_message(filters.text & ~filters.command(["start", "subscribe", "unsubscribe", "stats", "delete_all_movies", "delete_movie"]) & (filters.private | filters.group))
+@app.on_message(filters.text & ~filters.command(["start", "subscribe", "unsubscribe", "stats"]) & (filters.private | filters.group))
 async def search_handler(client, message):
     query_raw = message.text.strip()
     query_clean = clean_text(query_raw)
     users_col.update_one({"_id": message.from_user.id}, {"$set": {"last_search": datetime.utcnow()}}, upsert=True)
+
     loading = await message.reply("🔎 অনুসন্ধান চলছে...")
-
     all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
-    exact_matches = [m for m in all_movies if clean_text(m["title"]) == query_clean]
 
+    exact_matches = [m for m in all_movies if clean_text(m["title"]) == query_clean]
     if exact_matches:
         await loading.delete()
         for m in exact_matches[:RESULTS_COUNT]:
@@ -114,30 +113,38 @@ async def search_handler(client, message):
 
     if filtered:
         await loading.delete()
-        buttons = [[InlineKeyboardButton(m["title"][:40], callback_data=f"movie*{m['message_id']}")] for m in filtered]
+        buttons = [[InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")] for m in filtered]
         short_query = query_raw[:30]
         buttons.append([
-            InlineKeyboardButton("Bengali", callback_data=f"lang*Bengali*{short_query}"),
-            InlineKeyboardButton("Hindi", callback_data=f"lang*Hindi*{short_query}"),
-            InlineKeyboardButton("English", callback_data=f"lang*English*{short_query}")
+            InlineKeyboardButton("Bengali", callback_data=f"lang_Bengali_{short_query}"),
+            InlineKeyboardButton("Hindi", callback_data=f"lang_Hindi_{short_query}"),
+            InlineKeyboardButton("English", callback_data=f"lang_English_{short_query}")
         ])
         await message.reply("আপনার মুভির সাথে মিল পাওয়া গেছে, সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(buttons))
     else:
-        await loading.edit("😢 কিছু পাওয়া যায়নি, দয়া করে আবার চেষ্টা করুন।")
-        buttons = [
-            [InlineKeyboardButton("❌ আপনি ভুল নাম দিছেন", callback_data=f"nofind*wrong*{query_raw[:30]}")],
-            [InlineKeyboardButton("⏳ মুভিটা এখনো আসেনি", callback_data=f"nofind*notyet*{query_raw[:30]}")],
-            [InlineKeyboardButton("✅ মুভিটা চ্যানেলে আপলোড করা আছে", callback_data=f"nofind*exist*{query_raw[:30]}")],
-            [InlineKeyboardButton("🚀 এডমিন অনেক তাড়াতাড়ি এই মুভি ডাউনলোড করবে", callback_data=f"nofind*soon*{query_raw[:30]}")],
-        ]
-        await message.reply("আপনার মুভিটি খুঁজে পাওয়া যায়নি। নিচের অপশনগুলোর যেকোনো একটি নির্বাচন করুন:", reply_markup=InlineKeyboardMarkup(buttons))
+        await loading.edit("😢 কিছু পাওয়া যায়নি, দয়া করে আবার চেষ্টা করুন। আপনার অনুরোধটি এডমিনদের জানানো হয়েছে।")
+        for admin_id in ADMIN_IDS:
+            try:
+                requests_col.insert_one({"user_id": message.from_user.id, "username": message.from_user.username, "first_name": message.from_user.first_name, "query": query_raw})
+                await app.send_message(
+                    admin_id,
+                    f"📩 নতুন রিপোর্ট এসেছে:\n\n👤 ইউজার: {message.from_user.first_name} (@{message.from_user.username}) [{message.from_user.id}]\n🔎 সার্চ কীওয়ার্ড: {query_raw}\n📋 রেসপন্স পাঠান:",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("❌ ভুল নাম দিয়েছেন", callback_data=f"adminreply_wrong_{message.from_user.id}")],
+                        [InlineKeyboardButton("⏳ এখনো আসেনি", callback_data=f"adminreply_notyet_{message.from_user.id}")],
+                        [InlineKeyboardButton("✅ আপলোড করা আছে", callback_data=f"adminreply_exist_{message.from_user.id}")],
+                        [InlineKeyboardButton("🚀 শিগগির আসবে", callback_data=f"adminreply_soon_{message.from_user.id}")],
+                    ])
+                )
+            except Exception as e:
+                logger.error(f"Admin notify failed: {e}")
 
-# ✅ Callback Handler
+# ✅ Callback handler
 @app.on_callback_query()
 async def callback_handler(client, callback):
     data = callback.data
-    if data.startswith("movie*"):
-        msg_id = int(data.split("*")[1])
+    if data.startswith("movie_"):
+        msg_id = int(data.split("_")[1])
         try:
             fwd = await app.forward_messages(callback.message.chat.id, CHANNEL_ID, msg_id)
             await callback.answer("✅ মুভি পাঠানো হয়েছে!")
@@ -145,39 +152,38 @@ async def callback_handler(client, callback):
         except Exception as e:
             await callback.answer("❌ মুভি পাঠানো যায়নি।", show_alert=True)
             logger.error(f"Forward error: {e}")
-    elif data.startswith("lang*"):
-        parts = data.split("*")
-        lang = parts[1]
-        query = parts[2]
+
+    elif data.startswith("lang_"):
+        lang = data.split("_")[1]
+        query = "_".join(data.split("_")[2:])
         lang_movies = list(movies_col.find({"language": lang}))
         choices = {m["title"]: m for m in lang_movies}
         fuzzy_results = process.extract(query, choices.keys(), scorer=fuzz.partial_ratio, limit=RESULTS_COUNT)
         filtered = [choices[title] for title, score, _ in fuzzy_results if score >= 70]
         if filtered:
-            buttons = [[InlineKeyboardButton(m["title"][:40], callback_data=f"movie*{m['message_id']}")] for m in filtered]
+            buttons = [[InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")] for m in filtered]
             await callback.message.edit_text(f"🔍 ভাষা: {lang} এর ফলাফল:", reply_markup=InlineKeyboardMarkup(buttons))
         else:
             await callback.answer("❌ কোনো ফলাফল পাওয়া যায়নি।", show_alert=True)
-    elif data.startswith("nofind*"):
-        _, reason, query = data.split("*", 2)
-        user = callback.from_user
+
+    elif data.startswith("adminreply_"):
+        parts = data.split("_")
+        reason, user_id = parts[1], int(parts[2])
         reason_text = {
             "wrong": "❌ আপনি ভুল নাম দিছেন",
             "notyet": "⏳ মুভিটা এখনো আসেনি",
             "exist": "✅ মুভিটা চ্যানেলে আপলোড করা আছে",
             "soon": "🚀 এডমিন অনেক তাড়াতাড়ি এই মুভি ডাউনলোড করবে"
-        }.get(reason, "Unknown")
-        for admin_id in ADMIN_IDS:
-            try:
-                await app.send_message(
-                    admin_id,
-                    f"📩 নতুন রিপোর্ট এসেছে:\n\n👤 ইউজার: {user.first_name} (@{user.username}) [{user.id}]\n🔎 সার্চ কীওয়ার্ড: {query}\n📋 কারণ: {reason_text}"
-                )
-            except Exception as e:
-                logger.error(f"Admin notify failed: {e}")
-        await callback.answer("✅ এডমিনকে জানানো হয়েছে। ধন্যবাদ।", show_alert=True)
+        }.get(reason, "📋 এডমিন রেসপন্স করেছেন।")
 
-# ✅ Subscribe/Unsubscribe/Stats Commands
+        try:
+            await app.send_message(user_id, f"📬 এডমিনের রেসপন্স:\n{reason_text}")
+            await callback.answer("✅ ইউজারকে রেসপন্স পাঠানো হয়েছে।")
+        except Exception as e:
+            logger.error(f"Send to user failed: {e}")
+            await callback.answer("❌ ইউজারকে মেসেজ পাঠানো যায়নি।", show_alert=True)
+
+# ✅ Subscribe command
 @app.on_message(filters.command("subscribe") & (filters.private | filters.group))
 async def subscribe(client, message):
     user_id = message.from_user.id
@@ -187,11 +193,13 @@ async def subscribe(client, message):
     else:
         await message.reply("ℹ️ আপনি ইতিমধ্যে সাবস্ক্রাইব করেছেন।")
 
+# ✅ Unsubscribe command
 @app.on_message(filters.command("unsubscribe") & (filters.private | filters.group))
 async def unsubscribe(client, message):
     subscribers_col.delete_one({"user_id": message.from_user.id})
     await message.reply("❌ আপনি আনসাবস্ক্রাইব করেছেন।")
 
+# ✅ Stats command
 @app.on_message(filters.command("stats") & (filters.private | filters.group))
 async def stats(client, message):
     stats_text = (
@@ -202,25 +210,7 @@ async def stats(client, message):
     )
     await message.reply(stats_text)
 
-# ✅ Delete All Movies
-@app.on_message(filters.command("delete_all_movies") & filters.user(ADMIN_IDS))
-async def delete_all_movies(client, message):
-    movies_col.delete_many({})
-    await message.reply("🗑️ সমস্ত মুভি ডিলিট করা হয়েছে।")
-
-# ✅ Delete Single Movie
-@app.on_message(filters.command("delete_movie") & filters.user(ADMIN_IDS))
-async def delete_single_movie(client, message):
-    if len(message.command) < 2:
-        return await message.reply("❗Usage: /delete_movie <title>")
-    title = " ".join(message.command[1:]).strip().lower()
-    result = movies_col.delete_one({"title": {"$regex": f"^{re.escape(title)}$", "$options": "i"}})
-    if result.deleted_count:
-        await message.reply(f"✅ '{title}' মুভি ডিলিট হয়েছে।")
-    else:
-        await message.reply("❌ কোনো মুভি পাওয়া যায়নি।")
-
-# ✅ Start Command
+# ✅ Start command
 @app.on_message(filters.command("start") & (filters.private | filters.group))
 async def start(client, message):
     await message.reply(
@@ -229,5 +219,5 @@ async def start(client, message):
         f"🔔 আপডেট পেতে: {UPDATE_CHANNEL}"
     )
 
-# ✅ Run the bot
+# ✅ Run bot
 app.run()
