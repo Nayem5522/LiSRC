@@ -76,7 +76,7 @@ async def save_movie(client, message):
     await notify_subscribers(movie_title)
 
 # Search Handler with Fuzzy Matching
-@app.on_message(filters.private & filters.text)
+@app.on_message(filters.text & (filters.private | filters.group))
 async def search_handler(client, message):
     query_raw = message.text.strip()
     query_clean = clean_text(query_raw)
