@@ -88,8 +88,8 @@ async def save_movie(client, message):
 async def search_handler(client, message):
     query_raw = message.text.strip()
     query_clean = clean_text(query_raw)
-    await users_col.update_one({"_id": message.from_user.id}, {"$set": {"last_search": datetime.utcnow()}}, upsert=True)
-    
+    users_col.update_one({"_id": message.from_user.id}, {"$set": {"last_search": datetime.utcnow()}}, upsert=True)
+
     loading = await message.reply("🔎 অনুসন্ধান চলছে...")
 
     all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
