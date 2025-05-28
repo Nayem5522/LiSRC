@@ -8,18 +8,23 @@ import re
 import asyncio
 from datetime import datetime
 from rapidfuzz import fuzz, process
+import logging
 
-# Configs
+# Logging setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Configs from environment
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 RESULTS_COUNT = int(os.getenv("RESULTS_COUNT", 10))
-ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(",")))
+ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "0").split(",")))
 DATABASE_URL = os.getenv("DATABASE_URL")
 UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL", "https://t.me/CTGMovieOfficial")
-START_PIC = os.getenv("START_PIC", "https://i.ibb.co/prnGXMr3/photo-2025-05-16-05-15-45-7504908428624527364.jpg")
 
+# Pyrogram Bot
 app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # MongoDB setup
@@ -29,15 +34,16 @@ movies_col = db["movies"]
 users_col = db["users"]
 subscribers_col = db["subscribers"]
 
+# Indexes
 movies_col.create_index([("title", ASCENDING)])
 movies_col.create_index("message_id")
 movies_col.create_index("language")
 
-# Flask app for uptime
+# Flask for uptime (Replit or similar)
 flask_app = Flask(__name__)
 @flask_app.route("/")
 def home():
-    return "Bot is running!"
+    return "✅ Bot is running!"
 Thread(target=lambda: flask_app.run(host="0.0.0.0", port=8080)).start()
 
 # Helpers
@@ -48,144 +54,136 @@ async def delete_message_later(chat_id, message_id, delay=600):
     await asyncio.sleep(delay)
     try:
         await app.delete_messages(chat_id, message_id)
-    except:
-        pass
+    except Exception as e:
+        logger.warning(f"Auto delete failed: {e}")
 
 async def notify_subscribers(movie_title):
-    subscribers = subscribers_col.find()
-    for subscriber in subscribers:
+    for sub in subscribers_col.find():
         try:
-            await app.send_message(subscriber["user_id"], f"🎬 নতুন মুভি পোস্ট হয়েছে: {movie_title}\n\n{UPDATE_CHANNEL}")
-        except:
-            pass
+            await app.send_message(sub["user_id"], f"🎬 নতুন মুভি পোস্ট হয়েছে: {movie_title}\n\n{UPDATE_CHANNEL}")
+        except Exception as e:
+            logger.warning(f"Notify failed for {sub['user_id']}: {e}")
 
-# Auto save new movie when posted in channel
-@app.on_message(filters.channel & filters.text)
+# ✅ Save new movie from channel
+@app.on_message(filters.channel)
 async def save_movie(client, message):
-    movie_title = message.text.splitlines()[0]
-    movie_language = "Unknown"
-    movie_data = {
-        "title": movie_title,
-        "message_id": message.message_id,
-        "language": movie_language,
-        "posted_at": datetime.utcnow(),
-    }
-    movies_col.insert_one(movie_data)
-    await notify_subscribers(movie_title)
+    try:
+        if not message.text:
+            return
+        movie_title = message.text.splitlines()[0]
+        movie_data = {
+            "title": movie_title.strip(),
+            "message_id": message.message_id,
+            "language": "Unknown",
+            "posted_at": datetime.utcnow()
+        }
+        movies_col.insert_one(movie_data)
+        logger.info(f"✅ Saved movie: {movie_title}")
+        await notify_subscribers(movie_title)
+    except Exception as e:
+        logger.error(f"❌ Movie save failed: {e}")
 
-# ✅ Fixed Search Handler
-@app.on_message(
-    filters.text 
-    & ~filters.command(["start", "subscribe", "unsubscribe", "stats"]) 
-    & (filters.private | filters.group)
-)
+# ✅ Search Handler
+@app.on_message(filters.text & ~filters.command(["start", "subscribe", "unsubscribe", "stats"]) & (filters.private | filters.group))
 async def search_handler(client, message):
     query_raw = message.text.strip()
     query_clean = clean_text(query_raw)
-
-    users_col.update_one(
-        {"_id": message.from_user.id},
-        {"$set": {"last_search": datetime.utcnow()}},
-        upsert=True
-    )
-
-    loading_msg = await message.reply("🔎 লোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
+    await users_col.update_one({"_id": message.from_user.id}, {"$set": {"last_search": datetime.utcnow()}}, upsert=True)
+    
+    loading = await message.reply("🔎 অনুসন্ধান চলছে...")
 
     all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
+    exact_matches = [m for m in all_movies if clean_text(m["title"]) == query_clean]
 
-    exact_matches = [m for m in all_movies if clean_text(m.get("title", "")) == query_clean]
     if exact_matches:
-        await loading_msg.delete()
+        await loading.delete()
         for m in exact_matches[:RESULTS_COUNT]:
-            fwd_msg = await app.forward_messages(message.chat.id, CHANNEL_ID, m["message_id"])
-            await message.reply(f"🎬 আপনার জন্য পাওয়া গেছে: {m['title']}\n\n⚠️ মেসেজটি ১০ মিনিট পরে অটো ডিলিট হবে।")
-            asyncio.create_task(delete_message_later(message.chat.id, fwd_msg.id))
-            await asyncio.sleep(0.7)
+            try:
+                fwd = await app.forward_messages(message.chat.id, CHANNEL_ID, m["message_id"])
+                await message.reply(f"🎬 {m['title']}\n\n⚠️ মেসেজটি ১০ মিনিট পরে অটো ডিলিট হবে।")
+                asyncio.create_task(delete_message_later(message.chat.id, fwd.id))
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.warning(f"Forward failed: {e}")
         return
 
     choices = {m["title"]: m for m in all_movies}
     fuzzy_results = process.extract(query_raw, choices.keys(), scorer=fuzz.partial_ratio, limit=RESULTS_COUNT)
-    filtered_suggestions = [choices[title] for title, score, _ in fuzzy_results if score >= 70]
+    filtered = [choices[title] for title, score, _ in fuzzy_results if score >= 70]
 
-    if filtered_suggestions:
-        await loading_msg.delete()
-        buttons = [[InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")] for m in filtered_suggestions]
-        lang_buttons = [
+    if filtered:
+        await loading.delete()
+        buttons = [[InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")] for m in filtered]
+        buttons.append([
             InlineKeyboardButton("Bengali", callback_data=f"lang_Bengali_{query_raw}"),
             InlineKeyboardButton("Hindi", callback_data=f"lang_Hindi_{query_raw}"),
             InlineKeyboardButton("English", callback_data=f"lang_English_{query_raw}")
-        ]
-        buttons.append(lang_buttons)
+        ])
+        await message.reply("আপনার মুভির সাথে মিল পাওয়া গেছে, সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(buttons))
+    else:
+        await loading.edit("😢 কিছু পাওয়া যায়নি, দয়া করে আবার চেষ্টা করুন।")
 
-        await message.reply("আপনার মুভির নামের সাথে মিল পাওয়া গেছে, নিচের থেকে সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(buttons))
-        return
-
-    await loading_msg.edit("দুঃখিত, কোনো ফলাফল পাওয়া যায়নি। দয়া করে সঠিক নাম লিখুন অথবা পরে আবার চেষ্টা করুন।")
-
-# Callback Handler
+# ✅ Callback handler
 @app.on_callback_query()
-async def callback_handler(client, callback_query):
-    data = callback_query.data
+async def callback_handler(client, callback):
+    data = callback.data
     if data.startswith("movie_"):
         msg_id = int(data.split("_")[1])
-        fwd_msg = await app.forward_messages(callback_query.message.chat.id, CHANNEL_ID, msg_id)
-        await callback_query.answer("মুভি পাঠানো হয়েছে!")
-        asyncio.create_task(delete_message_later(callback_query.message.chat.id, fwd_msg.id))
+        try:
+            fwd = await app.forward_messages(callback.message.chat.id, CHANNEL_ID, msg_id)
+            await callback.answer("✅ মুভি পাঠানো হয়েছে!")
+            asyncio.create_task(delete_message_later(callback.message.chat.id, fwd.id))
+        except Exception as e:
+            await callback.answer("❌ মুভি পাঠানো যায়নি।", show_alert=True)
+            logger.error(f"Forward error: {e}")
     elif data.startswith("lang_"):
-        parts = data.split("_")
-        lang = parts[1]
-        query = "_".join(parts[2:])
-        lang_movies = list(movies_col.find({"language": lang}, {"title": 1, "message_id": 1}))
+        lang = data.split("_")[1]
+        query = "_".join(data.split("_")[2:])
+        lang_movies = list(movies_col.find({"language": lang}))
         choices = {m["title"]: m for m in lang_movies}
         fuzzy_results = process.extract(query, choices.keys(), scorer=fuzz.partial_ratio, limit=RESULTS_COUNT)
         filtered = [choices[title] for title, score, _ in fuzzy_results if score >= 70]
         if filtered:
             buttons = [[InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")] for m in filtered]
-            await callback_query.message.edit_text(f"ভাষা: {lang} এর জন্য ফলাফল:", reply_markup=InlineKeyboardMarkup(buttons))
+            await callback.message.edit_text(f"🔍 ভাষা: {lang} এর ফলাফল:", reply_markup=InlineKeyboardMarkup(buttons))
         else:
-            await callback_query.answer("দুঃখিত, এই ভাষায় কোনো মিল পাওয়া যায়নি।", show_alert=True)
+            await callback.answer("❌ কোনো ফলাফল পাওয়া যায়নি।", show_alert=True)
 
-# Subscribe Command
+# ✅ Subscribe command
 @app.on_message(filters.command("subscribe") & (filters.private | filters.group))
 async def subscribe(client, message):
     user_id = message.from_user.id
     if not subscribers_col.find_one({"user_id": user_id}):
         subscribers_col.insert_one({"user_id": user_id})
-        await message.reply("✅ আপনি সফলভাবে সাবস্ক্রাইব করেছেন। এখন থেকে নতুন মুভি পোস্ট হলে আপনাকে নোটিফাই করা হবে।")
+        await message.reply("✅ সাবস্ক্রিপশন সফল।")
     else:
         await message.reply("ℹ️ আপনি ইতিমধ্যে সাবস্ক্রাইব করেছেন।")
 
-# Unsubscribe Command
+# ✅ Unsubscribe command
 @app.on_message(filters.command("unsubscribe") & (filters.private | filters.group))
 async def unsubscribe(client, message):
-    user_id = message.from_user.id
-    subscribers_col.delete_one({"user_id": user_id})
-    await message.reply("❌ আপনি সফলভাবে আনসাবস্ক্রাইব করেছেন। এখন থেকে নতুন মুভির নোটিফিকেশন আর পাবেন না।")
+    subscribers_col.delete_one({"user_id": message.from_user.id})
+    await message.reply("❌ আপনি আনসাবস্ক্রাইব করেছেন।")
 
-# Stats Command
+# ✅ Stats command
 @app.on_message(filters.command("stats") & (filters.private | filters.group))
 async def stats(client, message):
-    user_count = users_col.count_documents({})
-    subscriber_count = subscribers_col.count_documents({})
-    movie_count = movies_col.count_documents({})
-    stats_message = (
-        f"📊 বট পরিসংখ্যান:\n"
-        f"👤 ইউজার সংখ্যা: {user_count}\n"
-        f"🔔 সাবস্ক্রাইবার: {subscriber_count}\n"
-        f"🎬 মোট মুভি: {movie_count}"
+    stats_text = (
+        f"📊 পরিসংখ্যান:\n"
+        f"👤 ইউজার: {users_col.count_documents({})}\n"
+        f"🔔 সাবস্ক্রাইবার: {subscribers_col.count_documents({})}\n"
+        f"🎬 মুভি: {movies_col.count_documents({})}"
     )
-    await message.reply(stats_message)
+    await message.reply(stats_text)
 
-# Start Command
+# ✅ Start command
 @app.on_message(filters.command("start") & (filters.private | filters.group))
-async def start_command(client, message):
-    text = (
+async def start(client, message):
+    await message.reply(
         f"হ্যালো {message.from_user.first_name}!\n"
-        "আমি তোমার মুভি সার্চ বট।\n"
-        "তুমি শুধু মুভির নাম পাঠাও, আমি তোমাকে খুঁজে দিব।\n"
-        f"আপডেট পেতে: {UPDATE_CHANNEL}"
+        "আমি একটি মুভি সার্চ বট। শুধু মুভির নাম লিখো, আমি খুঁজে দিবো।\n"
+        f"🔔 আপডেট পেতে: {UPDATE_CHANNEL}"
     )
-    await message.reply(text)
 
-# Run the bot
+# ✅ Run bot
 app.run()
