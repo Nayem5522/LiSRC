@@ -1,7 +1,7 @@
-pyrogram==2.0.39
-tgcrypto==1.2.3
-pymongo==4.3.3
-flask==2.3.2
-python-dotenv==1.0.0
-rapidfuzz==2.14.0
+pyrogram
+tgcrypto
+pymongo
+flask
+python-dotenv
+rapidfuzz
 
