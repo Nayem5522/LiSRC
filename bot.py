@@ -39,7 +39,7 @@ movies_col.create_index([("title", ASCENDING)])
 movies_col.create_index("message_id")
 movies_col.create_index("language")
 
-# Flask for uptime (Replit or similar)
+# Flask for uptime
 flask_app = Flask(__name__)
 @flask_app.route("/")
 def home():
@@ -65,21 +65,27 @@ async def notify_subscribers(movie_title):
             logger.warning(f"Notify failed for {sub['user_id']}: {e}")
 
 # ✅ Save new movie from channel
-@app.on_message(filters.channel)
+@app.on_message(filters.chat(CHANNEL_ID))
 async def save_movie(client, message):
     try:
         if not message.text:
+            logger.warning("❌ মেসেজে টেক্সট নেই, স্কিপ করা হলো।")
             return
+
+        logger.info(f"🎯 Incoming message: {message.text[:100]}")
         movie_title = message.text.splitlines()[0]
+
         movie_data = {
             "title": movie_title.strip(),
-            "message_id": message.message_id,
+            "message_id": message.id,  # ✅ Fix here
             "language": "Unknown",
             "posted_at": datetime.utcnow()
         }
-        movies_col.insert_one(movie_data)
-        logger.info(f"✅ Saved movie: {movie_title}")
+
+        result = movies_col.insert_one(movie_data)
+        logger.info(f"✅ Saved movie: {movie_title} with ID: {result.inserted_id}")
         await notify_subscribers(movie_title)
+
     except Exception as e:
         logger.error(f"❌ Movie save failed: {e}")
 
@@ -88,10 +94,9 @@ async def save_movie(client, message):
 async def search_handler(client, message):
     query_raw = message.text.strip()
     query_clean = clean_text(query_raw)
-    users_col.update_one({"_id": message.from_user.id}, {"$set": {"last_search": datetime.utcnow()}}, upsert=True)
+    await users_col.update_one({"_id": message.from_user.id}, {"$set": {"last_search": datetime.utcnow()}}, upsert=True)
 
     loading = await message.reply("🔎 অনুসন্ধান চলছে...")
-
     all_movies = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
     exact_matches = [m for m in all_movies if clean_text(m["title"]) == query_clean]
 
