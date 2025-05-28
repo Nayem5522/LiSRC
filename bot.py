@@ -114,10 +114,12 @@ async def search_handler(client, message):
     if filtered:
         await loading.delete()
         buttons = [[InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")] for m in filtered]
+
+        short_query = query_raw[:30]  # ✅ Avoid BUTTON_DATA_INVALID
         buttons.append([
-            InlineKeyboardButton("Bengali", callback_data=f"lang_Bengali_{query_raw}"),
-            InlineKeyboardButton("Hindi", callback_data=f"lang_Hindi_{query_raw}"),
-            InlineKeyboardButton("English", callback_data=f"lang_English_{query_raw}")
+            InlineKeyboardButton("Bengali", callback_data=f"lang_Bengali_{short_query}"),
+            InlineKeyboardButton("Hindi", callback_data=f"lang_Hindi_{short_query}"),
+            InlineKeyboardButton("English", callback_data=f"lang_English_{short_query}")
         ])
         await message.reply("আপনার মুভির সাথে মিল পাওয়া গেছে, সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(buttons))
     else:
