@@ -1,265 +1,146 @@
-from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from pymongo import MongoClient, ASCENDING
-from flask import Flask
-from threading import Thread
-import os
-import re
-from datetime import datetime
-import asyncio
-import urllib.parse
+# ✅ Movie Bot by @CTG_Tech with fast MongoDB regex search + admin feedback system
 
-# Configs
+from pyrogram import Client, filters, enums
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pymongo import MongoClient, ASCENDING, TEXT
+from flask import Flask
+import os, re, asyncio
+from datetime import datetime
+
+# ✅ Configs
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 RESULTS_COUNT = int(os.getenv("RESULTS_COUNT", 10))
 ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(",")))
-DATABASE_URL = os.getenv("DATABASE_URL")
+DB_URL = os.getenv("DATABASE_URL")
 UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL", "https://t.me/CTGMovieOfficial")
-START_PIC = os.getenv("START_PIC", "https://i.ibb.co/prnGXMr3/photo-2025-05-16-05-15-45-7504908428624527364.jpg")
+START_PIC = os.getenv("START_PIC", "")
 
-app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# ✅ Init
+app = Client("MovieBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+mongo = MongoClient(DB_URL)
+db = mongo.movie_bot
+db.movies.create_index([("title", TEXT), ("year", ASCENDING)])
+db.users.create_index("user_id")
+db.feedback.create_index("user_id")
 
-# MongoDB setup
-mongo = MongoClient(DATABASE_URL)
-db = mongo["movie_bot"]
-movies_col = db["movies"]
-feedback_col = db["feedback"]
-stats_col = db["stats"]
-users_col = db["users"]
-settings_col = db["settings"]
-
-# Index
-movies_col.create_index([("title", ASCENDING)])
-movies_col.create_index("message_id")
-movies_col.create_index("language")
-
-# Flask
+# ✅ Flask Server
 flask_app = Flask(__name__)
-@flask_app.route("/")
-def home():
-    return "Bot is running!"
-Thread(target=lambda: flask_app.run(host="0.0.0.0", port=8080)).start()
+@flask_app.route('/')
+def index(): return 'Bot is running!'
 
-# Helpers
-def clean_text(text):
-    return re.sub(r'[^a-zA-Z0-9]', '', text.lower())
+async def auto_delete(msg: Message): await asyncio.sleep(300); await msg.delete()
 
-def extract_year(text):
-    match = re.search(r"(19|20)\d{2}", text)
-    return match.group() if match else None
+def movie_markup(m):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📥 DOWNLOAD", url=m.get("link", UPDATE_CHANNEL))],
+        [InlineKeyboardButton("🧨 Report", callback_data=f"report:{m['message_id']}")]
+    ])
 
-def extract_language(text):
-    langs = ["Bengali", "Hindi", "English"]
-    return next((lang for lang in langs if lang.lower() in text.lower()), "Unknown")
+@app.on_message(filters.command("start") & filters.private)
+async def start(_, m: Message):
+    db.users.update_one({"user_id": m.from_user.id}, {"$set": {"username": m.from_user.username}}, upsert=True)
+    await m.reply_photo(
+        photo=START_PIC,
+        caption=f"👋 Hi {m.from_user.first_name}!\n🎬 Send me a movie name to search.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📢 Updates", url=UPDATE_CHANNEL)]
+        ])
+    )
 
-async def delete_message_later(chat_id, message_id, delay=600):
-    await asyncio.sleep(delay)
-    try:
-        await app.delete_messages(chat_id, message_id)
-    except:
-        pass
+@app.on_message(filters.text & filters.private & ~filters.command)
+async def search_movie(_, m: Message):
+    query = m.text.strip()
+    user_id = m.from_user.id
+    lang = None
+    if "/" in query:
+        parts = query.split("/")
+        query = parts[0].strip()
+        lang = parts[1].strip().lower()
+    
+    regex = re.compile(f".*{re.escape(query)}.*", re.IGNORECASE)
+    filters_ = {"title": regex}
+    if lang: filters_["language"] = re.compile(lang, re.IGNORECASE)
 
-@app.on_message(filters.chat(CHANNEL_ID))
-async def save_post(_, msg: Message):
-    text = msg.text or msg.caption
-    if not text:
+    results = list(db.movies.find(filters_).limit(RESULTS_COUNT))
+
+    if not results:
+        rid = str(datetime.now().timestamp()).replace('.', '')
+        db.feedback.insert_one({"rid": rid, "user_id": user_id, "query": query})
+        btns = [
+            [InlineKeyboardButton("❌ Wrong Name", callback_data=f"resp:{rid}:wrong")],
+            [InlineKeyboardButton("⏳ Not Released", callback_data=f"resp:{rid}:notyet")],
+            [InlineKeyboardButton("📥 Uploaded", callback_data=f"resp:{rid}:uploaded")],
+            [InlineKeyboardButton("🎯 Coming Soon", callback_data=f"resp:{rid}:coming")],
+        ]
+        for aid in ADMIN_IDS:
+            await app.send_message(
+                aid,
+                f"❗ No result for: `{query}`\nFrom: [{m.from_user.first_name}](tg://user?id={user_id})",
+                reply_markup=InlineKeyboardMarkup(btns)
+            )
+        await m.reply("🚫 No results found.", reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔍 Google it", url=f"https://www.google.com/search?q={query} movie")]
+        ]))
         return
-    movie = {
-        "message_id": msg.id,
-        "title": text,
-        "date": msg.date,
-        "year": extract_year(text),
-        "language": extract_language(text)
-    }
-    movies_col.update_one({"message_id": msg.id}, {"$set": movie}, upsert=True)
 
-    setting = settings_col.find_one({"key": "global_notify"})
-    if setting and setting.get("value"):
-        for user in users_col.find({"notify": {"$ne": False}}):
-            try:
-                await app.send_message(
-                    user["_id"],
-                    f"নতুন মুভি আপলোড হয়েছে:\n{text.splitlines()[0][:100]}\nএখনই সার্চ করে দেখুন!"
-                )
-            except:
-                pass
+    for res in results:
+        cap = f"🎬 {res['title']} ({res.get('year', '')}) [{res.get('language', 'Unknown')}]"
+        msg = await m.reply(cap, reply_markup=movie_markup(res))
+        asyncio.create_task(auto_delete(msg))
 
-@app.on_message(filters.command("start"))
-async def start(_, msg: Message):
-    users_col.update_one(
-        {"_id": msg.from_user.id},
-        {"$set": {"joined": datetime.utcnow()}},
+@app.on_message(filters.chat(CHANNEL_ID) & filters.text)
+async def save_movie(_, m: Message):
+    match = re.match(r"(.+?) (\d{4}) ([A-Za-z ]+)", m.text)
+    if not match: return
+    title, year, language = match.groups()
+    db.movies.update_one(
+        {"message_id": m.id},
+        {"$set": {"title": title.strip(), "year": int(year), "language": language.strip(), "message_id": m.id, "link": m.link}},
         upsert=True
     )
-    btns = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Update Channel", url=UPDATE_CHANNEL)],
-        [InlineKeyboardButton("Contact Admin", url="https://t.me/ctgmovies23")]
-    ])
-    await msg.reply_photo(photo=START_PIC, caption="Send me a movie name to search.", reply_markup=btns)
 
-@app.on_message(filters.command("feedback") & filters.private)
-async def feedback(_, msg):
-    if len(msg.command) < 2:
-        return await msg.reply("Please write something after /feedback.")
-    feedback_col.insert_one({
-        "user": msg.from_user.id,
-        "text": msg.text.split(None, 1)[1],
-        "time": datetime.utcnow()
-    })
-    m = await msg.reply("Thanks for your feedback!")
-    asyncio.create_task(delete_message_later(m.chat.id, m.id))
+@app.on_callback_query(filters.regex("^report"))
+async def report_cb(_, cb: CallbackQuery):
+    await cb.answer("📩 Report sent to admins.", show_alert=True)
 
-@app.on_message(filters.command("broadcast") & filters.user(ADMIN_IDS))
-async def broadcast(_, msg):
-    if len(msg.command) < 2:
-        return await msg.reply("Usage: /broadcast Your message here")
-    count = 0
-    for user in users_col.find():
-        try:
-            await app.send_message(user["_id"], msg.text.split(None, 1)[1])
-            count += 1
-        except:
-            pass
-    await msg.reply(f"Broadcast sent to {count} users.")
+@app.on_callback_query(filters.regex("^resp:(.+):(.+)$"))
+async def admin_response(_, cb: CallbackQuery):
+    rid, action = cb.matches[0].groups()
+    fb = db.feedback.find_one({"rid": rid})
+    if not fb: return await cb.answer("⚠️ Expired", show_alert=True)
+    uid = fb['user_id']
+    msgs = {
+        "wrong": "🚫 It seems the movie name is incorrect.",
+        "notyet": "⌛ This movie hasn't been released yet.",
+        "uploaded": "✅ This movie is already uploaded. Try correct name.",
+        "coming": "🎯 This movie will be uploaded soon. Stay tuned!"
+    }
+    await app.send_message(uid, msgs.get(action, "ℹ️ Info"))
+    await cb.answer("✅ Sent to user")
+    db.feedback.delete_one({"rid": rid})
 
 @app.on_message(filters.command("stats") & filters.user(ADMIN_IDS))
-async def stats(_, msg):
-    await msg.reply(
-        f"Users: {users_col.count_documents({})}\n"
-        f"Movies: {movies_col.count_documents({})}\n"
-        f"Feedbacks: {feedback_col.count_documents({})}"
-    )
+async def stats(_, m: Message):
+    total_users = db.users.count_documents({})
+    total_movies = db.movies.count_documents({})
+    await m.reply(f"👥 Users: {total_users}\n🎬 Movies: {total_movies}")
 
-@app.on_message(filters.command("notify") & filters.user(ADMIN_IDS))
-async def notify_command(_, msg: Message):
-    if len(msg.command) != 2 or msg.command[1] not in ["on", "off"]:
-        return await msg.reply("ব্যবহার: /notify on  অথবা  /notify off")
-    new_value = True if msg.command[1] == "on" else False
-    settings_col.update_one(
-        {"key": "global_notify"},
-        {"$set": {"value": new_value}},
-        upsert=True
-    )
-    status = "enabled" if new_value else "disabled"
-    await msg.reply(f"✅ Global notifications {status}!")
+@app.on_message(filters.command("delete_all_movies") & filters.user(ADMIN_IDS))
+async def del_all(_, m: Message):
+    db.movies.delete_many({})
+    await m.reply("🗑️ All movies deleted.")
 
-@app.on_message(filters.text)
-async def search(_, msg):
-    raw_query = msg.text.strip()
-    query = clean_text(raw_query)
-    users_col.update_one(
-        {"_id": msg.from_user.id},
-        {"$set": {"last_search": datetime.utcnow()}},
-        upsert=True
-    )
+@app.on_message(filters.command("delete_movie") & filters.user(ADMIN_IDS))
+async def del_one(_, m: Message):
+    q = " ".join(m.command[1:])
+    if not q: return await m.reply("❗Usage: /delete_movie <title>")
+    r = db.movies.delete_one({"title": re.compile(f"^{re.escape(q)}$", re.IGNORECASE)})
+    await m.reply("✅ Deleted" if r.deleted_count else "❌ Not found")
 
-    loading = await msg.reply("🔎 লোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
-
-    # MongoDB optimized search
-    exact = movies_col.find_one({"title": {"$regex": f"^{re.escape(raw_query)}$", "$options": "i"}})
-    if exact:
-        await loading.delete()
-        fwd = await app.forward_messages(msg.chat.id, CHANNEL_ID, exact["message_id"])
-        asyncio.create_task(delete_message_later(msg.chat.id, fwd.id))
-        return
-
-    suggestions = list(movies_col.find(
-        {"title": {"$regex": re.escape(raw_query), "$options": "i"}},
-        {"title": 1, "message_id": 1, "language": 1}
-    ).limit(RESULTS_COUNT))
-
-    if suggestions:
-        await loading.delete()
-        lang_buttons = [
-            InlineKeyboardButton("Bengali", callback_data=f"lang_Bengali_{query}"),
-            InlineKeyboardButton("Hindi", callback_data=f"lang_Hindi_{query}"),
-            InlineKeyboardButton("English", callback_data=f"lang_English_{query}")
-        ]
-        buttons = [[InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")] for m in suggestions]
-        buttons.append(lang_buttons)
-        m = await msg.reply("আপনার মুভির নাম মিলতে পারে, নিচের থেকে সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(buttons))
-        asyncio.create_task(delete_message_later(m.chat.id, m.id))
-        return
-
-    await loading.delete()
-    google_search_url = "https://www.google.com/search?q=" + urllib.parse.quote(raw_query)
-    google_button = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Search on Google", url=google_search_url)]
-    ])
-    alert = await msg.reply(
-        "কোনও ফলাফল পাওয়া যায়নি। অ্যাডমিনকে জানানো হয়েছে। নিচের বাটনে ক্লিক করে গুগলে সার্চ করুন।",
-        reply_markup=google_button
-    )
-    asyncio.create_task(delete_message_later(alert.chat.id, alert.id))
-
-    btn = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ মুভি আছে", callback_data=f"has_{msg.chat.id}_{msg.id}_{raw_query}"),
-            InlineKeyboardButton("❌ নেই", callback_data=f"no_{msg.chat.id}_{msg.id}_{raw_query}")
-        ],
-        [
-            InlineKeyboardButton("⏳ আসবে", callback_data=f"soon_{msg.chat.id}_{msg.id}_{raw_query}"),
-            InlineKeyboardButton("✏️ ভুল নাম", callback_data=f"wrong_{msg.chat.id}_{msg.id}_{raw_query}")
-        ]
-    ])
-    for admin_id in ADMIN_IDS:
-        await app.send_message(
-            admin_id,
-            f"❗ ইউজার `{msg.from_user.id}` `{msg.from_user.first_name}` খুঁজেছে: **{raw_query}**\nফলাফল পাওয়া যায়নি। নিচে বাটন থেকে উত্তর দিন।",
-            reply_markup=btn
-        )
-
-@app.on_callback_query()
-async def callback_handler(_, cq: CallbackQuery):
-    data = cq.data
-
-    if data.startswith("movie_"):
-        mid = int(data.split("_")[1])
-        fwd = await app.forward_messages(cq.message.chat.id, CHANNEL_ID, mid)
-        asyncio.create_task(delete_message_later(cq.message.chat.id, fwd.id))
-        await cq.answer("মুভি পাঠানো হয়েছে।")
-
-    elif data.startswith("lang_"):
-        _, lang, query = data.split("_", 2)
-        lang_movies = list(movies_col.find({"language": lang}))
-        matches = [
-            m for m in lang_movies
-            if re.search(re.escape(query), m.get("title", ""), re.IGNORECASE)
-        ]
-        if matches:
-            buttons = [
-                [InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")]
-                for m in matches[:RESULTS_COUNT]
-            ]
-            await cq.message.edit_text(
-                f"ফলাফল ({lang}) - নিচের থেকে সিলেক্ট করুন:",
-                reply_markup=InlineKeyboardMarkup(buttons)
-            )
-        else:
-            await cq.answer("এই ভাষায় কিছু পাওয়া যায়নি।", show_alert=True)
-        await cq.answer()
-
-    elif "_" in data:
-        parts = data.split("_", 3)
-        if len(parts) == 4:
-            action, uid, mid, raw_query = parts
-            uid = int(uid)
-            responses = {
-                "has": f"✅ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** মুভিটি ডাটাবেজে আছে। সঠিক নাম লিখে আবার চেষ্টা করুন।",
-                "no": f"❌ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** মুভিটি ডাটাবেজে নেই।",
-                "soon": f"⏳ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** মুভিটি শীঘ্রই আসবে।",
-                "wrong": f"✏️ @{cq.from_user.username or cq.from_user.first_name} বলছেন যে আপনি ভুল নাম লিখেছেন: **{raw_query}**।"
-            }
-            if action in responses:
-                m = await app.send_message(uid, responses[action])
-                asyncio.create_task(delete_message_later(m.chat.id, m.id))
-                await cq.answer("অ্যাডমিনের পক্ষ থেকে উত্তর পাঠানো হয়েছে।")
-            else:
-                await cq.answer()
-
-if __name__ == "__main__":
-    print("Bot is starting...")
+if __name__ == '__main__':
+    import threading
+    threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))).start()
     app.run()
