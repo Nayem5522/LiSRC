@@ -72,7 +72,8 @@ async def save_post(_, msg: Message):
         "title": text,
         "date": msg.date,
         "year": extract_year(text),
-        "language": extract_language(text)
+        "language": extract_language(text),
+        "title_clean": clean_text(text)
     }
     movies_col.update_one({"message_id": msg.id}, {"$set": movie}, upsert=True)
 
@@ -158,16 +159,8 @@ async def search(_, msg):
 
     loading = await msg.reply("🔎 লোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
 
-    # MongoDB optimized search
-    exact = movies_col.find_one({"title": {"$regex": f"^{re.escape(raw_query)}$", "$options": "i"}})
-    if exact:
-        await loading.delete()
-        fwd = await app.forward_messages(msg.chat.id, CHANNEL_ID, exact["message_id"])
-        asyncio.create_task(delete_message_later(msg.chat.id, fwd.id))
-        return
-
     suggestions = list(movies_col.find(
-        {"title": {"$regex": re.escape(raw_query), "$options": "i"}},
+        {"title_clean": {"$regex": query}},
         {"title": 1, "message_id": 1, "language": 1}
     ).limit(RESULTS_COUNT))
 
@@ -227,7 +220,7 @@ async def callback_handler(_, cq: CallbackQuery):
         lang_movies = list(movies_col.find({"language": lang}))
         matches = [
             m for m in lang_movies
-            if re.search(re.escape(query), m.get("title", ""), re.IGNORECASE)
+            if re.search(re.escape(query), clean_text(m.get("title", "")), re.IGNORECASE)
         ]
         if matches:
             buttons = [
