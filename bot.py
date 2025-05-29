@@ -1,146 +1,118 @@
-# ✅ Movie Bot by @CTG_Tech with fast MongoDB regex search + admin feedback system
-
-from pyrogram import Client, filters, enums
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from pymongo import MongoClient, ASCENDING, TEXT
+# bot.py
+import os
+import re
+import logging
 from flask import Flask
-import os, re, asyncio
-from datetime import datetime
+from threading import Thread
+from pymongo import MongoClient, TEXT
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
+import requests
 
-# ✅ Configs
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
-RESULTS_COUNT = int(os.getenv("RESULTS_COUNT", 10))
-ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(",")))
-DB_URL = os.getenv("DATABASE_URL")
-UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL", "https://t.me/CTGMovieOfficial")
-START_PIC = os.getenv("START_PIC", "")
+# ====== CONFIG ======
+API_ID = 12345678  # 🔁 আপনার API_ID দিন
+API_HASH = "your_api_hash"  # 🔁 আপনার API_HASH দিন
+BOT_TOKEN = "your_bot_token"  # 🔁 আপনার BOT_TOKEN দিন
+MONGO_URI = "mongodb+srv://..."  # 🔁 Mongo URI দিন
+IMDB_API_KEY = "your_imdb_api_key"  # 🔁 IMDb API key দিন
+MOVIE_CHANNEL = -1001234567890  # 🔁 আপনার চ্যানেলের ID (negative sign সহ)
 
-# ✅ Init
-app = Client("MovieBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-mongo = MongoClient(DB_URL)
+ADMINS = [123456789]  # 🔁 এডমিনদের ইউজার আইডি
+
+# ====== SETUP ======
+bot = Client("MovieBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+mongo = MongoClient(MONGO_URI)
 db = mongo.movie_bot
-db.movies.create_index([("title", TEXT), ("year", ASCENDING)])
-db.users.create_index("user_id")
-db.feedback.create_index("user_id")
+movies = db.movies
+users = db.users
 
-# ✅ Flask Server
-flask_app = Flask(__name__)
-@flask_app.route('/')
-def index(): return 'Bot is running!'
+try:
+    movies.create_index([("title", TEXT)], default_language="none")
+except Exception as e:
+    print("Index Error:", e)
 
-async def auto_delete(msg: Message): await asyncio.sleep(300); await msg.delete()
+# ====== IMDb ======
+def get_imdb_data(query):
+    url = f"https://www.omdbapi.com/?t={query}&apikey={IMDB_API_KEY}"
+    try:
+        res = requests.get(url).json()
+        if res.get("Response") == "True":
+            return f"🎬 {res.get('Title')} ({res.get('Year')})\n⭐ {res.get('imdbRating')} IMDb\n🗂️ {res.get('Genre')}\n📝 {res.get('Plot')}"
+    except:
+        pass
+    return None
 
-def movie_markup(m):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📥 DOWNLOAD", url=m.get("link", UPDATE_CHANNEL))],
-        [InlineKeyboardButton("🧨 Report", callback_data=f"report:{m['message_id']}")]
-    ])
+# ====== MOVIE SAVE FROM CHANNEL ======
+@bot.on_message(filters.channel & filters.chat(MOVIE_CHANNEL) & filters.text)
+def save_movie(client, message):
+    title_match = re.search(r'^(.+?)\s+(\d{4})', message.text)
+    if title_match:
+        title = title_match.group(1).strip()
+        year = title_match.group(2)
+        movie_doc = {
+            "title": title.lower(),
+            "year": year,
+            "caption": message.text,
+            "link": message.link
+        }
+        if not movies.find_one({"title": title.lower()}):
+            movies.insert_one(movie_doc)
 
-@app.on_message(filters.command("start") & filters.private)
-async def start(_, m: Message):
-    db.users.update_one({"user_id": m.from_user.id}, {"$set": {"username": m.from_user.username}}, upsert=True)
-    await m.reply_photo(
-        photo=START_PIC,
-        caption=f"👋 Hi {m.from_user.first_name}!\n🎬 Send me a movie name to search.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📢 Updates", url=UPDATE_CHANNEL)]
-        ])
-    )
+# ====== SEARCH COMMAND ======
+@bot.on_message(filters.private & filters.text & ~filters.command(["start", "delete_all_movies", "delete_movie"]))
+def search_movie(client, message):
+    query = message.text.lower()
+    regex = {"$regex": f".*{re.escape(query)}.*", "$options": "i"}
+    results = movies.find({"title": regex}).limit(5)
 
-@app.on_message(filters.text & filters.private & ~filters.command)
-async def search_movie(_, m: Message):
-    query = m.text.strip()
-    user_id = m.from_user.id
-    lang = None
-    if "/" in query:
-        parts = query.split("/")
-        query = parts[0].strip()
-        lang = parts[1].strip().lower()
-    
-    regex = re.compile(f".*{re.escape(query)}.*", re.IGNORECASE)
-    filters_ = {"title": regex}
-    if lang: filters_["language"] = re.compile(lang, re.IGNORECASE)
+    if results.count() == 0:
+        return message.reply("❌ মুভি পাওয়া যায়নি।")
 
-    results = list(db.movies.find(filters_).limit(RESULTS_COUNT))
+    buttons = []
+    for movie in results:
+        imdb = get_imdb_data(movie['title'])
+        text = f"{movie['caption']}\n\n{imdb if imdb else ''}"
+        btn = InlineKeyboardMarkup([[InlineKeyboardButton("📥 Download", url=movie['link'])]])
+        message.reply(text, reply_markup=btn)
 
-    if not results:
-        rid = str(datetime.now().timestamp()).replace('.', '')
-        db.feedback.insert_one({"rid": rid, "user_id": user_id, "query": query})
-        btns = [
-            [InlineKeyboardButton("❌ Wrong Name", callback_data=f"resp:{rid}:wrong")],
-            [InlineKeyboardButton("⏳ Not Released", callback_data=f"resp:{rid}:notyet")],
-            [InlineKeyboardButton("📥 Uploaded", callback_data=f"resp:{rid}:uploaded")],
-            [InlineKeyboardButton("🎯 Coming Soon", callback_data=f"resp:{rid}:coming")],
-        ]
-        for aid in ADMIN_IDS:
-            await app.send_message(
-                aid,
-                f"❗ No result for: `{query}`\nFrom: [{m.from_user.first_name}](tg://user?id={user_id})",
-                reply_markup=InlineKeyboardMarkup(btns)
-            )
-        await m.reply("🚫 No results found.", reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔍 Google it", url=f"https://www.google.com/search?q={query} movie")]
-        ]))
-        return
+    users.update_one({"_id": message.from_user.id}, {"$set": {"last_query": query}}, upsert=True)
 
-    for res in results:
-        cap = f"🎬 {res['title']} ({res.get('year', '')}) [{res.get('language', 'Unknown')}]"
-        msg = await m.reply(cap, reply_markup=movie_markup(res))
-        asyncio.create_task(auto_delete(msg))
+# ====== START ======
+@bot.on_message(filters.command("start"))
+def start(client, message):
+    message.reply("👋 স্বাগতম! মুভির নাম লিখে খুঁজুন।")
 
-@app.on_message(filters.chat(CHANNEL_ID) & filters.text)
-async def save_movie(_, m: Message):
-    match = re.match(r"(.+?) (\d{4}) ([A-Za-z ]+)", m.text)
-    if not match: return
-    title, year, language = match.groups()
-    db.movies.update_one(
-        {"message_id": m.id},
-        {"$set": {"title": title.strip(), "year": int(year), "language": language.strip(), "message_id": m.id, "link": m.link}},
-        upsert=True
-    )
+# ====== DELETE ALL MOVIES ======
+@bot.on_message(filters.command("delete_all_movies") & filters.user(ADMINS))
+def delete_all_movies(client, message):
+    result = movies.delete_many({})
+    message.reply(f"✅ {result.deleted_count}টি মুভি ডিলিট হয়েছে।")
 
-@app.on_callback_query(filters.regex("^report"))
-async def report_cb(_, cb: CallbackQuery):
-    await cb.answer("📩 Report sent to admins.", show_alert=True)
+# ====== DELETE BY TITLE ======
+@bot.on_message(filters.command("delete_movie") & filters.user(ADMINS))
+def delete_movie(client, message: Message):
+    if len(message.command) < 2:
+        return message.reply("⚠️ উদাহরণ: `/delete_movie avengers`", quote=True)
+    title = " ".join(message.command[1:]).lower()
+    result = movies.delete_one({"title": {"$regex": f"^{re.escape(title)}$", "$options": "i"}})
+    if result.deleted_count:
+        message.reply("✅ মুভি ডিলিট হয়েছে।")
+    else:
+        message.reply("❌ এমন কোন মুভি পাইনি।")
 
-@app.on_callback_query(filters.regex("^resp:(.+):(.+)$"))
-async def admin_response(_, cb: CallbackQuery):
-    rid, action = cb.matches[0].groups()
-    fb = db.feedback.find_one({"rid": rid})
-    if not fb: return await cb.answer("⚠️ Expired", show_alert=True)
-    uid = fb['user_id']
-    msgs = {
-        "wrong": "🚫 It seems the movie name is incorrect.",
-        "notyet": "⌛ This movie hasn't been released yet.",
-        "uploaded": "✅ This movie is already uploaded. Try correct name.",
-        "coming": "🎯 This movie will be uploaded soon. Stay tuned!"
-    }
-    await app.send_message(uid, msgs.get(action, "ℹ️ Info"))
-    await cb.answer("✅ Sent to user")
-    db.feedback.delete_one({"rid": rid})
+# ====== FLASK DASHBOARD (Optional Placeholder) ======
+app = Flask(__name__)
 
-@app.on_message(filters.command("stats") & filters.user(ADMIN_IDS))
-async def stats(_, m: Message):
-    total_users = db.users.count_documents({})
-    total_movies = db.movies.count_documents({})
-    await m.reply(f"👥 Users: {total_users}\n🎬 Movies: {total_movies}")
+@app.route('/')
+def home():
+    total_users = users.count_documents({})
+    total_movies = movies.count_documents({})
+    return f"<h2>📊 Movie Bot Stats</h2><p>👥 Users: {total_users}<br>🎬 Movies: {total_movies}</p>"
 
-@app.on_message(filters.command("delete_all_movies") & filters.user(ADMIN_IDS))
-async def del_all(_, m: Message):
-    db.movies.delete_many({})
-    await m.reply("🗑️ All movies deleted.")
+def run_flask():
+    app.run(host="0.0.0.0", port=8000)
 
-@app.on_message(filters.command("delete_movie") & filters.user(ADMIN_IDS))
-async def del_one(_, m: Message):
-    q = " ".join(m.command[1:])
-    if not q: return await m.reply("❗Usage: /delete_movie <title>")
-    r = db.movies.delete_one({"title": re.compile(f"^{re.escape(q)}$", re.IGNORECASE)})
-    await m.reply("✅ Deleted" if r.deleted_count else "❌ Not found")
-
-if __name__ == '__main__':
-    import threading
-    threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))).start()
-    app.run()
+# ====== START EVERYTHING ======
+if __name__ == "__main__":
+    Thread(target=run_flask).start()
+    bot.run()
