@@ -34,8 +34,9 @@ users_col = db["users"]
 settings_col = db["settings"]
 
 # Indexing - Optimized for faster search
-# FIX: Added language='english' to resolve 'language override unsupported: Unknown' error
-movies_col.create_index([("title", "text")], language='english') # Primary index for text search
+# FIX: Removed language='english' as it's disallowed in your Atlas tier.
+# Also, modified extract_language to return None instead of "Unknown"
+movies_col.create_index([("title", "text")]) # Primary index for text search - NO 'language' option
 movies_col.create_index("message_id")
 movies_col.create_index("language")
 movies_col.create_index([("title_clean", ASCENDING)])
@@ -49,20 +50,17 @@ def home():
 Thread(target=lambda: flask_app.run(host="0.0.0.0", port=8080)).start()
 
 # Initialize a global ThreadPoolExecutor for running blocking functions (like fuzzywuzzy)
-# Adjust max_workers based on your server's CPU cores and expected concurrent load
 thread_pool_executor = ThreadPoolExecutor(max_workers=5)
 
 # Helpers
 def clean_text(text):
     return re.sub(r'[^a-zA-Z0-9]', '', text.lower())
 
-def extract_year(text):
-    match = re.search(r"(19|20)\d{2}", text)
-    return match.group() if match else None
-
+# FIX: Modified extract_language to return None if language is not found
 def extract_language(text):
     langs = ["Bengali", "Hindi", "English"]
-    return next((lang for lang in langs if lang.lower() in text.lower()), "Unknown")
+    # Return the detected language, otherwise None
+    return next((lang for lang in langs if lang.lower() in text.lower()), None)
 
 async def delete_message_later(chat_id, message_id, delay=600):
     await asyncio.sleep(delay)
@@ -101,20 +99,20 @@ async def save_post(_, msg: Message):
     if not text:
         return
 
-    existing_movie = movies_col.find_one({"message_id": msg.id})
-    
-    movie = {
+    # Ensure movie is processed before saving to avoid race conditions with indexing
+    movie_to_save = {
         "message_id": msg.id,
         "title": text,
         "date": msg.date,
         "year": extract_year(text),
-        "language": extract_language(text),
+        "language": extract_language(text), # Will now be None if not found
         "title_clean": clean_text(text)
     }
     
-    movies_col.update_one({"message_id": msg.id}, {"$set": movie}, upsert=True)
+    movies_col.update_one({"message_id": msg.id}, {"$set": movie_to_save}, upsert=True)
 
-    if not existing_movie:
+    # Check if this is a new movie post to send notification
+    if not movies_col.find_one({"message_id": msg.id, "_id": {"$ne": movie_to_save.get('_id')}}): # Checks if it was a new insert
         setting = settings_col.find_one({"key": "global_notify"})
         if setting and setting.get("value"):
             for user in users_col.find({"notify": {"$ne": False}}):
@@ -232,19 +230,18 @@ async def search(_, msg: Message):
         upsert=True
     )
 
-    # Show loading message immediately
     loading_message = await msg.reply("🔎 লোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
 
     # --- Optimized Search Logic ---
 
-    # 1. Try to find direct matches using MongoDB's text index (most efficient for full-text search)
+    # 1. Try to find direct matches using MongoDB's text index
     direct_suggestions = list(movies_col.find(
         {"$text": {"$search": raw_query}},
         {"title": 1, "message_id": 1, "language": 1, "score": {"$meta": "textScore"}}
     ).sort([("score", {"$meta": "textScore"})]).limit(RESULTS_COUNT))
 
     if direct_suggestions:
-        await loading_message.delete() # Delete loading message immediately if found
+        await loading_message.delete()
         buttons = []
         for m in direct_suggestions:
             buttons.append([InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")])
@@ -260,7 +257,7 @@ async def search(_, msg: Message):
         asyncio.create_task(delete_message_later(m.chat.id, m.id))
         return
 
-    # 2. If no direct matches from text index, try using title_clean for exact phrase/starts-with match (faster regex)
+    # 2. If no direct matches from text index, try using title_clean for exact phrase/starts-with match
     query_clean = clean_text(raw_query)
     direct_clean_suggestions = list(movies_col.find(
         {"title_clean": {"$regex": f"^{re.escape(query_clean)}", "$options": "i"}},
@@ -268,7 +265,7 @@ async def search(_, msg: Message):
     ).limit(RESULTS_COUNT))
 
     if direct_clean_suggestions:
-        await loading_message.delete() # Delete loading message immediately if found
+        await loading_message.delete()
         buttons = []
         for m in direct_clean_suggestions:
             buttons.append([InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")])
@@ -297,7 +294,6 @@ async def search(_, msg: Message):
         for m in potential_fuzzy_matches
     ]
     
-    # Run fuzzywuzzy in a separate thread to prevent blocking the main event loop
     loop = asyncio.get_running_loop()
     corrected_suggestions = await loop.run_in_executor(
         thread_pool_executor,
@@ -430,7 +426,7 @@ async def callback_handler(_, cq: CallbackQuery):
             uid = int(uid)
             responses = {
                 "has": f"✅ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** মুভিটি ডাটাবেজে আছে। সঠিক নাম লিখে আবার চেষ্টা করুন।",
-                "no": f"❌ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** মুভিটি ডাataবেজে নেই।",
+                "no": f"❌ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** মুভিটি ডাটাবেজে নেই।",
                 "soon": f"⏳ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** মুভিটি শীঘ্রই আসবে।",
                 "wrong": f"✏️ @{cq.from_user.username or cq.from_user.first_name} বলছেন যে আপনি ভুল নাম লিখেছেন: **{raw_query}**।"
             }
