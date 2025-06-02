@@ -34,9 +34,9 @@ users_col = db["users"]
 settings_col = db["settings"]
 
 # Indexing - Optimized for faster search
-# FIX: Removed language='english' as it's disallowed in your Atlas tier.
-# Also, modified extract_language to return None instead of "Unknown"
-movies_col.create_index([("title", "text")]) # Primary index for text search - NO 'language' option
+# FIX: Removed 'language' option as it's disallowed in your Atlas tier.
+# MongoDB will use its default text index language (usually English).
+movies_col.create_index([("title", "text")]) # Primary index for text search
 movies_col.create_index("message_id")
 movies_col.create_index("language")
 movies_col.create_index([("title_clean", ASCENDING)])
@@ -56,10 +56,10 @@ thread_pool_executor = ThreadPoolExecutor(max_workers=5)
 def clean_text(text):
     return re.sub(r'[^a-zA-Z0-9]', '', text.lower())
 
-# FIX: Modified extract_language to return None if language is not found
+# FIX: Modified extract_language to return None if language is not found.
+# This prevents "Unknown" values from being inserted into the 'language' field.
 def extract_language(text):
     langs = ["Bengali", "Hindi", "English"]
-    # Return the detected language, otherwise None
     return next((lang for lang in langs if lang.lower() in text.lower()), None)
 
 async def delete_message_later(chat_id, message_id, delay=600):
@@ -99,7 +99,6 @@ async def save_post(_, msg: Message):
     if not text:
         return
 
-    # Ensure movie is processed before saving to avoid race conditions with indexing
     movie_to_save = {
         "message_id": msg.id,
         "title": text,
@@ -109,10 +108,12 @@ async def save_post(_, msg: Message):
         "title_clean": clean_text(text)
     }
     
-    movies_col.update_one({"message_id": msg.id}, {"$set": movie_to_save}, upsert=True)
+    # Use update_one with upsert=True to insert or update the movie
+    # This also helps in avoiding duplicate entries if the bot restarts and re-processes old messages
+    result = movies_col.update_one({"message_id": msg.id}, {"$set": movie_to_save}, upsert=True)
 
-    # Check if this is a new movie post to send notification
-    if not movies_col.find_one({"message_id": msg.id, "_id": {"$ne": movie_to_save.get('_id')}}): # Checks if it was a new insert
+    # Check if a new document was inserted (not just updated) to send notification
+    if result.upserted_id is not None:
         setting = settings_col.find_one({"key": "global_notify"})
         if setting and setting.get("value"):
             for user in users_col.find({"notify": {"$ne": False}}):
