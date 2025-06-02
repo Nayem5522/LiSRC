@@ -9,6 +9,7 @@ from datetime import datetime
 import asyncio
 import urllib.parse
 from fuzzywuzzy import process # Added for spell correction
+from concurrent.futures import ThreadPoolExecutor # Added for running blocking operations in a separate thread
 
 # Configs
 API_ID = int(os.getenv("API_ID"))
@@ -32,11 +33,12 @@ stats_col = db["stats"]
 users_col = db["users"]
 settings_col = db["settings"]
 
-# Index
-movies_col.create_index([("title", ASCENDING)])
+# Indexing - Optimized for faster search
+movies_col.create_index([("title", "text")]) # Primary index for text search
 movies_col.create_index("message_id")
 movies_col.create_index("language")
-movies_col.create_index([("title_clean", ASCENDING)]) # Ensure title_clean is also indexed
+movies_col.create_index([("title_clean", ASCENDING)]) # Still useful for specific clean_text searches
+movies_col.create_index([("language", ASCENDING), ("title_clean", ASCENDING)]) # Combined index for lang + clean_title search
 
 # Flask App for health check
 flask_app = Flask(__name__)
@@ -45,8 +47,13 @@ def home():
     return "Bot is running!"
 Thread(target=lambda: flask_app.run(host="0.0.0.0", port=8080)).start()
 
+# Initialize a global ThreadPoolExecutor for running blocking functions (like fuzzywuzzy)
+# Adjust max_workers based on your server's CPU cores and expected concurrent load
+thread_pool_executor = ThreadPoolExecutor(max_workers=5) # Example: 5 worker threads
+
 # Helpers
 def clean_text(text):
+    # This regex ensures only alphanumeric characters are kept, useful for strict matching
     return re.sub(r'[^a-zA-Z0-9]', '', text.lower())
 
 def extract_year(text):
@@ -66,11 +73,15 @@ async def delete_message_later(chat_id, message_id, delay=600):
         if "MESSAGE_ID_INVALID" not in str(e) and "MESSAGE_DELETE_FORBIDDEN" not in str(e):
             print(f"Error deleting message {message_id} in chat {chat_id}: {e}")
 
+# IMPORTANT: This function must be synchronous (not async) because it will be run in ThreadPoolExecutor
 def find_corrected_matches(query_clean, all_movie_titles_data, score_cutoff=70, limit=5):
     if not all_movie_titles_data:
         return []
 
     choices = [item["title_clean"] for item in all_movie_titles_data]
+    
+    # process.extract can be slow on very large choice lists.
+    # We ensure that all_movie_titles_data passed here is already a subset.
     matches_raw = process.extract(query_clean, choices, limit=limit)
 
     corrected_suggestions = []
@@ -93,8 +104,6 @@ async def save_post(_, msg: Message):
     if not text:
         return
 
-    # Check if movie already exists to prevent duplicate processing if bot restarts/re-processes
-    # This specifically targets notification to prevent sending multiple times for same post
     existing_movie = movies_col.find_one({"message_id": msg.id})
     
     movie = {
@@ -103,14 +112,12 @@ async def save_post(_, msg: Message):
         "date": msg.date,
         "year": extract_year(text),
         "language": extract_language(text),
-        "title_clean": clean_text(text)
+        "title_clean": clean_text(text) # Ensure title_clean is stored for fuzzy matching
     }
     
-    # Upsert the movie, if it exists, it will update; if not, it will insert
     movies_col.update_one({"message_id": msg.id}, {"$set": movie}, upsert=True)
 
-    # Only send notification if this is a truly new post or processed for the first time
-    if not existing_movie: # This is the main fix for duplicate notifications
+    if not existing_movie:
         setting = settings_col.find_one({"key": "global_notify"})
         if setting and setting.get("value"):
             for user in users_col.find({"notify": {"$ne": False}}):
@@ -119,23 +126,18 @@ async def save_post(_, msg: Message):
                         user["_id"],
                         f"নতুন মুভি আপলোড হয়েছে:\n**{text.splitlines()[0][:100]}**\nএখনই সার্চ করে দেখুন!"
                     )
-                    await asyncio.sleep(0.05) # Small delay to avoid flood limits when sending many notifications
+                    await asyncio.sleep(0.05)
                 except Exception as e:
-                    # Catch and log specific errors for sending messages (e.g., user blocked bot)
-                    if "PEER_ID_INVALID" in str(e) or "USER_IS_BOT" in str(e) or "USER_BOT" in str(e) or "USER_DEACTIVATED_REQUIRED" in str(e):
+                    if "PEER_ID_INVALID" in str(e) or "USER_IS_BOT" in str(e) or "USER_DEACTIVATED_REQUIRED" in str(e):
                         print(f"Skipping notification to invalid/blocked user {user['_id']}: {e}")
-                        # Optionally, remove user from database if they blocked bot
-                        # users_col.delete_one({"_id": user["_id"]})
                     else:
                         print(f"Failed to send notification to user {user['_id']}: {e}")
 
-
 @app.on_message(filters.command("start"))
 async def start(_, msg: Message):
-    # Ensure 'notify' field is set when a user starts the bot for the first time
     users_col.update_one(
         {"_id": msg.from_user.id},
-        {"$set": {"joined": datetime.utcnow(), "notify": True}}, # Set notify to True by default on start
+        {"$set": {"joined": datetime.utcnow(), "notify": True}},
         upsert=True
     )
     btns = InlineKeyboardMarkup([
@@ -166,13 +168,10 @@ async def broadcast(_, msg: Message):
         try:
             await app.send_message(user["_id"], message_to_send)
             count += 1
-            await asyncio.sleep(0.05) # Small delay to avoid flood limits
+            await asyncio.sleep(0.05)
         except Exception as e:
-            # Improved error handling for broadcast failures
             if "PEER_ID_INVALID" in str(e) or "USER_IS_BLOCKED" in str(e) or "USER_BOT" in str(e) or "USER_DEACTIVATED_REQUIRED" in str(e):
                 print(f"Skipping broadcast to invalid/blocked user {user['_id']}: {e}")
-                # Optional: Remove user from database if they have blocked the bot
-                # users_col.delete_one({"_id": user["_id"]})
             else:
                 print(f"Failed to broadcast to user {user['_id']}: {e}")
     await msg.reply(f"Broadcast sent to {count} users.")
@@ -198,16 +197,20 @@ async def notify_command(_, msg: Message):
     status = "enabled" if new_value else "disabled"
     await msg.reply(f"✅ Global notifications {status}!")
 
-# New feature: Delete a specific movie by title
 @app.on_message(filters.command("delete_movie") & filters.user(ADMIN_IDS))
 async def delete_specific_movie(_, msg: Message):
     if len(msg.command) < 2:
         return await msg.reply("অনুগ্রহ করে মুভির টাইটেল দিন। ব্যবহার: `/delete_movie <Movie Title>`")
     
     movie_title_to_delete = msg.text.split(None, 1)[1].strip()
-    cleaned_title_to_delete = clean_text(movie_title_to_delete)
+    
+    # Try to find using text index first for robustness
+    movie_to_delete = movies_col.find_one({"$text": {"$search": movie_title_to_delete}})
 
-    movie_to_delete = movies_col.find_one({"title_clean": {"$regex": f"^{re.escape(cleaned_title_to_delete)}$", "$options": "i"}})
+    if not movie_to_delete:
+        # Fallback to clean_text if text index doesn't find exact match
+        cleaned_title_to_delete = clean_text(movie_title_to_delete)
+        movie_to_delete = movies_col.find_one({"title_clean": {"$regex": f"^{re.escape(cleaned_title_to_delete)}$", "$options": "i"}})
 
     if movie_to_delete:
         movies_col.delete_one({"_id": movie_to_delete["_id"]})
@@ -215,7 +218,6 @@ async def delete_specific_movie(_, msg: Message):
     else:
         await msg.reply(f"**{movie_title_to_delete}** নামের কোনো মুভি খুঁজে পাওয়া যায়নি।")
 
-# New feature: Delete all movies
 @app.on_message(filters.command("delete_all_movies") & filters.user(ADMIN_IDS))
 async def delete_all_movies_command(_, msg: Message):
     confirmation_button = InlineKeyboardMarkup([
@@ -224,11 +226,9 @@ async def delete_all_movies_command(_, msg: Message):
     ])
     await msg.reply("আপনি কি নিশ্চিত যে আপনি ডাটাবেস থেকে **সব মুভি** ডিলিট করতে চান? এই প্রক্রিয়াটি অপরিবর্তনীয়!", reply_markup=confirmation_button)
 
-
 @app.on_message(filters.text)
 async def search(_, msg: Message):
     raw_query = msg.text.strip()
-    query_clean = clean_text(raw_query)
     user_id = msg.from_user.id
 
     users_col.update_one(
@@ -237,18 +237,46 @@ async def search(_, msg: Message):
         upsert=True
     )
 
-    loading = await msg.reply("🔎 লোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
+    # Show loading message immediately
+    loading_message = await msg.reply("🔎 লোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
 
-    # First, try to find direct matches
+    # --- Optimized Search Logic ---
+
+    # 1. Try to find direct matches using MongoDB's text index (most efficient for full-text search)
+    # This part should be very fast due to text indexing
     direct_suggestions = list(movies_col.find(
-        {"title_clean": {"$regex": query_clean, "$options": "i"}},
+        {"$text": {"$search": raw_query}},
+        {"title": 1, "message_id": 1, "language": 1, "score": {"$meta": "textScore"}} # Include textScore for relevance
+    ).sort([("score", {"$meta": "textScore"})]).limit(RESULTS_COUNT)) # Sort by relevance
+
+    if direct_suggestions:
+        await loading_message.delete() # Delete loading message immediately if found
+        buttons = []
+        for m in direct_suggestions:
+            buttons.append([InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")])
+        
+        lang_buttons = [
+            InlineKeyboardButton("Bengali", callback_data=f"lang_Bengali_{clean_text(raw_query)}"),
+            InlineKeyboardButton("Hindi", callback_data=f"lang_Hindi_{clean_text(raw_query)}"),
+            InlineKeyboardButton("English", callback_data=f"lang_English_{clean_text(raw_query)}")
+        ]
+        buttons.append(lang_buttons)
+        
+        m = await msg.reply("আপনার মুভির নাম মিলতে পারে, নিচের থেকে সিলেক্ট করুন:", reply_markup=InlineKeyboardMarkup(buttons))
+        asyncio.create_task(delete_message_later(m.chat.id, m.id))
+        return
+
+    # 2. If no direct matches from text index, try using title_clean for exact phrase/starts-with match (faster regex)
+    query_clean = clean_text(raw_query)
+    direct_clean_suggestions = list(movies_col.find(
+        {"title_clean": {"$regex": f"^{re.escape(query_clean)}", "$options": "i"}}, # Starts with query_clean
         {"title": 1, "message_id": 1, "language": 1}
     ).limit(RESULTS_COUNT))
 
-    if direct_suggestions:
-        await loading.delete()
+    if direct_clean_suggestions:
+        await loading_message.delete() # Delete loading message immediately if found
         buttons = []
-        for m in direct_suggestions:
+        for m in direct_clean_suggestions:
             buttons.append([InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")])
         
         lang_buttons = [
@@ -262,18 +290,33 @@ async def search(_, msg: Message):
         asyncio.create_task(delete_message_later(m.chat.id, m.id))
         return
 
-    # If no direct matches, attempt spell correction
-    all_movie_titles_from_db = list(movies_col.find({}, {"title": 1, "message_id": 1, "language": 1}))
-    
-    fuzzy_data_for_matching = [
-        {"title_clean": clean_text(m["title"]), "original_title": m["title"], "message_id": m["message_id"], "language": m["language"]}
-        for m in all_movie_titles_from_db
-    ]
+    # 3. If still no results, perform a limited fuzzy search on potential matches
+    # Load only a limited number of potential matches for fuzzy processing
+    potential_fuzzy_matches_cursor = movies_col.find(
+        {"title_clean": {"$regex": query_clean, "$options": "i"}}, # Any part of title_clean
+        {"title": 1, "message_id": 1, "language": 1, "title_clean": 1}
+    ).limit(50) # Limit to a reasonable number of documents to avoid high RAM usage
 
-    corrected_suggestions = find_corrected_matches(query_clean, fuzzy_data_for_matching)
+    potential_fuzzy_matches = list(potential_fuzzy_matches_cursor)
+
+    fuzzy_data_for_matching = [
+        {"title_clean": m["title_clean"], "original_title": m["title"], "message_id": m["message_id"], "language": m["language"]}
+        for m in potential_fuzzy_matches
+    ]
+    
+    # Run fuzzywuzzy in a separate thread to prevent blocking the main event loop
+    loop = asyncio.get_running_loop()
+    corrected_suggestions = await loop.run_in_executor(
+        thread_pool_executor, # Use the global thread pool
+        find_corrected_matches,
+        query_clean,
+        fuzzy_data_for_matching,
+        70, # score_cutoff
+        RESULTS_COUNT # limit
+    )
 
     if corrected_suggestions:
-        await loading.delete()
+        await loading_message.delete() # Delete loading message immediately if found
         buttons = []
         for m in corrected_suggestions[:RESULTS_COUNT]:
             buttons.append([InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")])
@@ -292,8 +335,8 @@ async def search(_, msg: Message):
         asyncio.create_task(delete_message_later(m.chat.id, m.id))
         return
 
-    # If no direct matches and no spell correction suggestions
-    await loading.delete()
+    # 4. If no direct matches and no spell correction suggestions
+    await loading_message.delete() # Delete loading message if no results found
     
     Google_Search_url = "https://www.google.com/search?q=" + urllib.parse.quote(raw_query)
     google_button = InlineKeyboardMarkup([
@@ -332,7 +375,7 @@ async def callback_handler(_, cq: CallbackQuery):
     data = cq.data
 
     if data == "confirm_delete_all_movies":
-        movies_col.delete_many({}) # Deletes all documents in the collection
+        movies_col.delete_many({})
         await cq.message.edit_text("✅ ডাটাবেস থেকে সব মুভি সফলভাবে ডিলিট করা হয়েছে।")
         await cq.answer("সব মুভি ডিলিট করা হয়েছে।")
     elif data == "cancel_delete_all_movies":
@@ -352,17 +395,32 @@ async def callback_handler(_, cq: CallbackQuery):
     elif data.startswith("lang_"):
         _, lang, query_clean = data.split("_", 2)
         
-        all_movies_in_lang = list(movies_col.find(
-            {"language": lang},
-            {"title": 1, "message_id": 1}
-        ))
+        # Show loading message for language-specific search if needed, but it should be fast now
+        # await cq.message.edit_text("🔎 ভাষা অনুযায়ী লোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...") # Optional
+
+        # Optimized language-specific fuzzy search
+        potential_lang_matches_cursor = movies_col.find(
+            {"language": lang, "title_clean": {"$regex": query_clean, "$options": "i"}},
+            {"title": 1, "message_id": 1, "title_clean": 1}
+        ).limit(50) # Limit documents for fuzzy processing
+
+        potential_lang_matches = list(potential_lang_matches_cursor)
         
         fuzzy_data_for_matching_lang = [
-            {"title_clean": clean_text(m["title"]), "original_title": m["title"], "message_id": m["message_id"], "language": lang}
-            for m in all_movies_in_lang
+            {"title_clean": m["title_clean"], "original_title": m["title"], "message_id": m["message_id"], "language": lang}
+            for m in potential_lang_matches
         ]
         
-        matches_filtered_by_lang = find_corrected_matches(query_clean, fuzzy_data_for_matching_lang)
+        # Run fuzzywuzzy in a separate thread
+        loop = asyncio.get_running_loop()
+        matches_filtered_by_lang = await loop.run_in_executor(
+            thread_pool_executor, # Use the global thread pool
+            find_corrected_matches,
+            query_clean,
+            fuzzy_data_for_matching_lang,
+            70, # score_cutoff
+            RESULTS_COUNT # limit
+        )
 
         if matches_filtered_by_lang:
             buttons = [
@@ -375,7 +433,7 @@ async def callback_handler(_, cq: CallbackQuery):
             )
         else:
             await cq.answer("এই ভাষায় কিছু পাওয়া যায়নি।", show_alert=True)
-        await cq.answer()
+        await cq.answer() # Confirm callback query was handled
 
     elif "_" in data:
         parts = data.split("_", 3)
@@ -397,7 +455,7 @@ async def callback_handler(_, cq: CallbackQuery):
                     await cq.answer("ইউজারকে বার্তা পাঠাতে সমস্যা হয়েছে।", show_alert=True)
                     print(f"Error sending admin feedback message: {e}")
             else:
-                await cq.answer()
+                await cq.answer("অকার্যকর কলব্যাক ডেটা।", show_alert=True)
         else:
             await cq.answer("অকার্যকর কলব্যাক ডেটা।", show_alert=True)
 
