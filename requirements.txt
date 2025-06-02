@@ -1,5 +1,7 @@
-pyrogram==2.0.106
-tgcrypto
+pyrogram
 pymongo
-flask
+Flask
+fuzzywuzzy
+python-Levenshtein
+
 
