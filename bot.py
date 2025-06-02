@@ -36,7 +36,8 @@ settings_col = db["settings"]
 # Indexing - Optimized for faster search
 # FIX: Removed 'language' option as it's disallowed in your Atlas tier.
 # MongoDB will use its default text index language (usually English).
-movies_col.create_index([("title", "text")]) # Primary index for text search
+# Primary index for text search
+movies_col.create_index([("title", "text")], default_language="none")
 movies_col.create_index("message_id")
 movies_col.create_index("language")
 movies_col.create_index([("title_clean", ASCENDING)])
