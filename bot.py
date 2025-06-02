@@ -1,6 +1,7 @@
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pymongo import MongoClient, ASCENDING
+from pymongo.errors import OperationFailure, CollectionInvalid # Added for error handling
 from flask import Flask
 from threading import Thread
 import os
@@ -34,14 +35,26 @@ users_col = db["users"]
 settings_col = db["settings"]
 
 # Indexing - Optimized for faster search
-# FIX: Removed 'language' option as it's disallowed in your Atlas tier.
-# MongoDB will use its default text index language (usually English).
-# Primary index for text search
-movies_col.create_index([("title", "text")])
-movies_col.create_index("message_id")
-movies_col.create_index("language")
-movies_col.create_index([("title_clean", ASCENDING)])
-movies_col.create_index([("language", ASCENDING), ("title_clean", ASCENDING)])
+# FIX: Using try-except for index creation to prevent bot from crashing on startup
+# if index creation fails due to Atlas tier limitations or existing data issues.
+try:
+    # Attempt to create text index without 'language' option
+    movies_col.create_index([("title", "text")])
+    print("Text index 'title' created successfully.")
+except OperationFailure as e:
+    print(f"Warning: Could not create text index on 'title'. Error: {e}")
+    print("This might be due to MongoDB Atlas Free Tier limitations or existing 'Unknown' language values.")
+    print("Please ensure you have cleared 'Unknown' language entries from your database manually if this persists.")
+    # Fallback: If text index fails, try to ensure other critical indexes still exist
+    # This prevents the bot from crashing, but search performance might be affected if text index is crucial.
+    # We will still ensure other indexes are created.
+
+# Ensure other critical indexes are always created
+movies_col.create_index("message_id", unique=True, background=True) # Added unique=True, background=True
+movies_col.create_index("language", background=True) # Added background=True
+movies_col.create_index([("title_clean", ASCENDING)], background=True) # Added background=True
+movies_col.create_index([("language", ASCENDING), ("title_clean", ASCENDING)], background=True) # Added background=True
+print("Other indexes ensured successfully.")
 
 # Flask App for health check
 flask_app = Flask(__name__)
@@ -62,6 +75,11 @@ def clean_text(text):
 def extract_language(text):
     langs = ["Bengali", "Hindi", "English"]
     return next((lang for lang in langs if lang.lower() in text.lower()), None)
+
+# Helper to extract year (if needed, otherwise define it or remove calls)
+def extract_year(text):
+    match = re.search(r'\b(19|20)\d{2}\b', text)
+    return int(match.group(0)) if match else None
 
 async def delete_message_later(chat_id, message_id, delay=600):
     await asyncio.sleep(delay)
