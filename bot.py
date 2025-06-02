@@ -8,8 +8,8 @@ import re
 from datetime import datetime
 import asyncio
 import urllib.parse
-from fuzzywuzzy import process # Added for spell correction
-from concurrent.futures import ThreadPoolExecutor # Added for running blocking operations in a separate thread
+from fuzzywuzzy import process
+from concurrent.futures import ThreadPoolExecutor
 
 # Configs
 API_ID = int(os.getenv("API_ID"))
@@ -34,11 +34,12 @@ users_col = db["users"]
 settings_col = db["settings"]
 
 # Indexing - Optimized for faster search
-movies_col.create_index([("title", "text")]) # Primary index for text search
+# FIX: Added language='english' to resolve 'language override unsupported: Unknown' error
+movies_col.create_index([("title", "text")], language='english') # Primary index for text search
 movies_col.create_index("message_id")
 movies_col.create_index("language")
-movies_col.create_index([("title_clean", ASCENDING)]) # Still useful for specific clean_text searches
-movies_col.create_index([("language", ASCENDING), ("title_clean", ASCENDING)]) # Combined index for lang + clean_title search
+movies_col.create_index([("title_clean", ASCENDING)])
+movies_col.create_index([("language", ASCENDING), ("title_clean", ASCENDING)])
 
 # Flask App for health check
 flask_app = Flask(__name__)
@@ -49,11 +50,10 @@ Thread(target=lambda: flask_app.run(host="0.0.0.0", port=8080)).start()
 
 # Initialize a global ThreadPoolExecutor for running blocking functions (like fuzzywuzzy)
 # Adjust max_workers based on your server's CPU cores and expected concurrent load
-thread_pool_executor = ThreadPoolExecutor(max_workers=5) # Example: 5 worker threads
+thread_pool_executor = ThreadPoolExecutor(max_workers=5)
 
 # Helpers
 def clean_text(text):
-    # This regex ensures only alphanumeric characters are kept, useful for strict matching
     return re.sub(r'[^a-zA-Z0-9]', '', text.lower())
 
 def extract_year(text):
@@ -69,7 +69,6 @@ async def delete_message_later(chat_id, message_id, delay=600):
     try:
         await app.delete_messages(chat_id, message_id)
     except Exception as e:
-        # Suppress "Message not found" errors which are common if user deletes first
         if "MESSAGE_ID_INVALID" not in str(e) and "MESSAGE_DELETE_FORBIDDEN" not in str(e):
             print(f"Error deleting message {message_id} in chat {chat_id}: {e}")
 
@@ -80,8 +79,6 @@ def find_corrected_matches(query_clean, all_movie_titles_data, score_cutoff=70, 
 
     choices = [item["title_clean"] for item in all_movie_titles_data]
     
-    # process.extract can be slow on very large choice lists.
-    # We ensure that all_movie_titles_data passed here is already a subset.
     matches_raw = process.extract(query_clean, choices, limit=limit)
 
     corrected_suggestions = []
@@ -112,7 +109,7 @@ async def save_post(_, msg: Message):
         "date": msg.date,
         "year": extract_year(text),
         "language": extract_language(text),
-        "title_clean": clean_text(text) # Ensure title_clean is stored for fuzzy matching
+        "title_clean": clean_text(text)
     }
     
     movies_col.update_one({"message_id": msg.id}, {"$set": movie}, upsert=True)
@@ -204,11 +201,9 @@ async def delete_specific_movie(_, msg: Message):
     
     movie_title_to_delete = msg.text.split(None, 1)[1].strip()
     
-    # Try to find using text index first for robustness
     movie_to_delete = movies_col.find_one({"$text": {"$search": movie_title_to_delete}})
 
     if not movie_to_delete:
-        # Fallback to clean_text if text index doesn't find exact match
         cleaned_title_to_delete = clean_text(movie_title_to_delete)
         movie_to_delete = movies_col.find_one({"title_clean": {"$regex": f"^{re.escape(cleaned_title_to_delete)}$", "$options": "i"}})
 
@@ -243,11 +238,10 @@ async def search(_, msg: Message):
     # --- Optimized Search Logic ---
 
     # 1. Try to find direct matches using MongoDB's text index (most efficient for full-text search)
-    # This part should be very fast due to text indexing
     direct_suggestions = list(movies_col.find(
         {"$text": {"$search": raw_query}},
-        {"title": 1, "message_id": 1, "language": 1, "score": {"$meta": "textScore"}} # Include textScore for relevance
-    ).sort([("score", {"$meta": "textScore"})]).limit(RESULTS_COUNT)) # Sort by relevance
+        {"title": 1, "message_id": 1, "language": 1, "score": {"$meta": "textScore"}}
+    ).sort([("score", {"$meta": "textScore"})]).limit(RESULTS_COUNT))
 
     if direct_suggestions:
         await loading_message.delete() # Delete loading message immediately if found
@@ -269,7 +263,7 @@ async def search(_, msg: Message):
     # 2. If no direct matches from text index, try using title_clean for exact phrase/starts-with match (faster regex)
     query_clean = clean_text(raw_query)
     direct_clean_suggestions = list(movies_col.find(
-        {"title_clean": {"$regex": f"^{re.escape(query_clean)}", "$options": "i"}}, # Starts with query_clean
+        {"title_clean": {"$regex": f"^{re.escape(query_clean)}", "$options": "i"}},
         {"title": 1, "message_id": 1, "language": 1}
     ).limit(RESULTS_COUNT))
 
@@ -291,11 +285,10 @@ async def search(_, msg: Message):
         return
 
     # 3. If still no results, perform a limited fuzzy search on potential matches
-    # Load only a limited number of potential matches for fuzzy processing
     potential_fuzzy_matches_cursor = movies_col.find(
-        {"title_clean": {"$regex": query_clean, "$options": "i"}}, # Any part of title_clean
+        {"title_clean": {"$regex": query_clean, "$options": "i"}},
         {"title": 1, "message_id": 1, "language": 1, "title_clean": 1}
-    ).limit(50) # Limit to a reasonable number of documents to avoid high RAM usage
+    ).limit(50)
 
     potential_fuzzy_matches = list(potential_fuzzy_matches_cursor)
 
@@ -307,16 +300,16 @@ async def search(_, msg: Message):
     # Run fuzzywuzzy in a separate thread to prevent blocking the main event loop
     loop = asyncio.get_running_loop()
     corrected_suggestions = await loop.run_in_executor(
-        thread_pool_executor, # Use the global thread pool
+        thread_pool_executor,
         find_corrected_matches,
         query_clean,
         fuzzy_data_for_matching,
-        70, # score_cutoff
-        RESULTS_COUNT # limit
+        70,
+        RESULTS_COUNT
     )
 
     if corrected_suggestions:
-        await loading_message.delete() # Delete loading message immediately if found
+        await loading_message.delete()
         buttons = []
         for m in corrected_suggestions[:RESULTS_COUNT]:
             buttons.append([InlineKeyboardButton(m["title"][:40], callback_data=f"movie_{m['message_id']}")])
@@ -336,7 +329,7 @@ async def search(_, msg: Message):
         return
 
     # 4. If no direct matches and no spell correction suggestions
-    await loading_message.delete() # Delete loading message if no results found
+    await loading_message.delete()
     
     Google_Search_url = "https://www.google.com/search?q=" + urllib.parse.quote(raw_query)
     google_button = InlineKeyboardMarkup([
@@ -395,14 +388,10 @@ async def callback_handler(_, cq: CallbackQuery):
     elif data.startswith("lang_"):
         _, lang, query_clean = data.split("_", 2)
         
-        # Show loading message for language-specific search if needed, but it should be fast now
-        # await cq.message.edit_text("🔎 ভাষা অনুযায়ী লোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...") # Optional
-
-        # Optimized language-specific fuzzy search
         potential_lang_matches_cursor = movies_col.find(
             {"language": lang, "title_clean": {"$regex": query_clean, "$options": "i"}},
             {"title": 1, "message_id": 1, "title_clean": 1}
-        ).limit(50) # Limit documents for fuzzy processing
+        ).limit(50)
 
         potential_lang_matches = list(potential_lang_matches_cursor)
         
@@ -411,15 +400,14 @@ async def callback_handler(_, cq: CallbackQuery):
             for m in potential_lang_matches
         ]
         
-        # Run fuzzywuzzy in a separate thread
         loop = asyncio.get_running_loop()
         matches_filtered_by_lang = await loop.run_in_executor(
-            thread_pool_executor, # Use the global thread pool
+            thread_pool_executor,
             find_corrected_matches,
             query_clean,
             fuzzy_data_for_matching_lang,
-            70, # score_cutoff
-            RESULTS_COUNT # limit
+            70,
+            RESULTS_COUNT
         )
 
         if matches_filtered_by_lang:
@@ -433,7 +421,7 @@ async def callback_handler(_, cq: CallbackQuery):
             )
         else:
             await cq.answer("এই ভাষায় কিছু পাওয়া যায়নি।", show_alert=True)
-        await cq.answer() # Confirm callback query was handled
+        await cq.answer()
 
     elif "_" in data:
         parts = data.split("_", 3)
@@ -442,7 +430,7 @@ async def callback_handler(_, cq: CallbackQuery):
             uid = int(uid)
             responses = {
                 "has": f"✅ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** মুভিটি ডাটাবেজে আছে। সঠিক নাম লিখে আবার চেষ্টা করুন।",
-                "no": f"❌ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** মুভিটি ডাটাবেজে নেই।",
+                "no": f"❌ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** মুভিটি ডাataবেজে নেই।",
                 "soon": f"⏳ @{cq.from_user.username or cq.from_user.first_name} জানিয়েছেন যে **{raw_query}** মুভিটি শীঘ্রই আসবে।",
                 "wrong": f"✏️ @{cq.from_user.username or cq.from_user.first_name} বলছেন যে আপনি ভুল নাম লিখেছেন: **{raw_query}**।"
             }
@@ -458,7 +446,6 @@ async def callback_handler(_, cq: CallbackQuery):
                 await cq.answer("অকার্যকর কলব্যাক ডেটা।", show_alert=True)
         else:
             await cq.answer("অকার্যকর কলব্যাক ডেটা।", show_alert=True)
-
 
 if __name__ == "__main__":
     print("Bot is starting...")
