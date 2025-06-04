@@ -6,7 +6,7 @@ from flask import Flask
 from threading import Thread
 import os
 import re
-from datetime import datetime
+from datetime import datetime, UTC # UTC ইম্পোর্ট করা হয়েছে
 import asyncio
 import urllib.parse
 from fuzzywuzzy import process
@@ -63,7 +63,8 @@ flask_app = Flask(__name__)
 @flask_app.route("/")
 def home():
     return "Bot is running!"
-Thread(target=lambda: flask_app.run(host="0000", port=8080)).start() # Changed 0.0.0.0 to 0000, ensure it's valid for your environment. Usually 0.0.0.0 is correct.
+# 0000 সাধারণত 0.0.0.0 এর জন্য একটি প্লেসহোল্ডার, নিশ্চিত করুন আপনার এনভায়রনমেন্টে 0.0.0.0 ব্যবহার করা হয়।
+Thread(target=lambda: flask_app.run(host="0.0.0.0", port=8080)).start() 
 
 # Initialize a global ThreadPoolExecutor for running blocking functions (like fuzzywuzzy)
 thread_pool_executor = ThreadPoolExecutor(max_workers=5)
@@ -157,7 +158,7 @@ async def start(_, msg: Message):
 
     users_col.update_one(
         {"_id": msg.from_user.id},
-        {"$set": {"joined": datetime.utcnow(), "notify": True}},
+        {"$set": {"joined": datetime.now(UTC), "notify": True}}, # datetime.utcnow() পরিবর্তন করা হয়েছে
         upsert=True
     )
     btns = InlineKeyboardMarkup([
@@ -173,7 +174,7 @@ async def feedback(_, msg: Message):
     feedback_col.insert_one({
         "user": msg.from_user.id,
         "text": msg.text.split(None, 1)[1],
-        "time": datetime.utcnow()
+        "time": datetime.now(UTC) # datetime.utcnow() পরিবর্তন করা হয়েছে
     })
     m = await msg.reply("আপনার মতামতের জন্য ধন্যবাদ!")
     asyncio.create_task(delete_message_later(m.chat.id, m.id, delay=30))
@@ -286,7 +287,7 @@ async def search(_, msg: Message):
     user_id = msg.from_user.id
     users_col.update_one(
         {"_id": user_id},
-        {"$set": {"last_query": query}, "$setOnInsert": {"joined": datetime.utcnow()}},
+        {"$set": {"last_query": query}, "$setOnInsert": {"joined": datetime.now(UTC)}}, # datetime.utcnow() পরিবর্তন করা হয়েছে
         upsert=True
     )
 
@@ -357,8 +358,9 @@ async def search(_, msg: Message):
             [InlineKeyboardButton("গুগলে সার্চ করুন", url=Google_Search_url)]
         ])
         
-        alert = await msg.reply(
-            not_found_text = """
+        # এখানে not_found_text আর্গুমেন্টটি সরানো হয়েছে এবং সরাসরি টেক্সট পাস করা হয়েছে
+        alert = await msg.reply_text( 
+            """
 ❌ দুঃখিত! আপনার খোঁজা মুভিটি খুঁজে পাওয়া যায়নি।
 এই মুভির অনুরোধটি এডমিনকে জানানো হয়েছে।
 
@@ -474,4 +476,3 @@ async def callback_handler(_, cq: CallbackQuery):
 if __name__ == "__main__":
     print("বট শুরু হচ্ছে...")
     app.run()
-
