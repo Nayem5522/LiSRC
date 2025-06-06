@@ -20,8 +20,8 @@ CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 RESULTS_COUNT = int(os.getenv("RESULTS_COUNT", 10))
 ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(",")))
 DATABASE_URL = os.getenv("DATABASE_URL")
-UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL", "https://t.me/CTGMovieOfficial")
-START_PIC = os.getenv("START_PIC", "https://i.ibb.co/prnGXMr3/photo-2025-05-16-05-15-45-7504908428624527364.jpg")
+UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL", "https://t.me/PrimeCineZone")
+START_PIC = os.getenv("START_PIC", "https://i.postimg.cc/SRQn4Dwg/IMG-20250606-112525-389.jpg")
 
 app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -208,7 +208,7 @@ async def start(_, msg: Message):
     )
     btns = InlineKeyboardMarkup([
         [InlineKeyboardButton("আপডেট চ্যানেল", url=UPDATE_CHANNEL)],
-        [InlineKeyboardButton("অ্যাডমিনের সাথে যোগাযোগ", url="https://t.me/ctgmovies23")]
+        [InlineKeyboardButton("অ্যাডমিনের সাথে যোগাযোগ", url="https://t.me/Prime_Nayem")]
     ])
     start_message = await msg.reply_photo(photo=START_PIC, caption="আমাকে মুভির নাম লিখে পাঠান, আমি খুঁজে দেবো।", reply_markup=btns)
     asyncio.create_task(delete_message_later(start_message.chat.id, start_message.id))
