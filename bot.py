@@ -158,6 +158,7 @@ async def save_post(_, msg: Message):
 @app.on_message(filters.command("start"))
 async def start(_, msg: Message):
     client = _
+    message = msg
     user_id = msg.from_user.id
     current_time = datetime.now(UTC)
 
