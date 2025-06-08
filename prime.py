@@ -1,5 +1,5 @@
 import re
-from os
+import os
 from os import environ
 id_pattern = re.compile(r'^.\d+$')
 
