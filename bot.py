@@ -1,7 +1,8 @@
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pymongo import MongoClient, ASCENDING
-from pymongo.errors import OperationFailure, CollectionInvalid, DuplicateKeyError
+from pyrogram.errors import *
+from prime import *
 from flask import Flask
 from threading import Thread
 import os
