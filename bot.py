@@ -12,17 +12,19 @@ import urllib.parse
 from fuzzywuzzy import process
 from concurrent.futures import ThreadPoolExecutor
 
-# Configs - নিশ্চিত করুন এই ভেরিয়েবলগুলো আপনার এনভায়রনমেন্টে সেট করা আছে।
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
-RESULTS_COUNT = int(os.getenv("RESULTS_COUNT", 10))
-ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(",")))
-DATABASE_URL = os.getenv("DATABASE_URL")
-UPDATE_CHANNEL = os.getenv("UPDATE_CHANNEL", "https://t.me/PrimeCineZone")
-START_PIC = os.getenv("START_PIC", "https://i.postimg.cc/SRQn4Dwg/IMG-20250606-112525-389.jpg")
+async def is_subscribed(bot, query, channel):
+    btn = []
+    for id in channel:
+        chat = await bot.get_chat(int(id))
+        try:
+            await bot.get_chat_member(id, query.from_user.id)
+        except UserNotParticipant:
+            btn.append([InlineKeyboardButton(f"✇ Join {chat.title} ✇", url=chat.invite_link)]) #✇ ᴊᴏɪɴ ᴏᴜʀ ᴜᴘᴅᴀᴛᴇꜱ ᴄʜᴀɴɴᴇʟ ✇
+        except Exception as e:
+            pass
+    return btn
 
+# Configs - নিশ্চিত করুন এই ভেরিয়েবলগুলো আপনার এনভায়রনমেন্টে সেট করা আছে।
 app = Client("movie_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # MongoDB setup
